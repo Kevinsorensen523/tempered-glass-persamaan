@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+hp_data.db
+backups/
+*.csv
+!template_import_tg.csv
+.env
+.DS_Store

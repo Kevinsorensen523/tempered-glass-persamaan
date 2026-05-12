@@ -1,0 +1,13 @@
+[Unit]
+Description=Database Tempered Glass
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/tempered-glass
+ExecStart=/opt/tempered-glass/venv/bin/gunicorn app:app --bind 0.0.0.0:8080 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
