@@ -125,9 +125,13 @@ def download_template():
         download_name="template_import_tg.csv",
     )
 
+EXPORT_PASSWORD = "bangkevin523"
 
 @app.get("/api/hp/export")
 def export_csv():
+    pwd = request.args.get("pwd")
+    if pwd != EXPORT_PASSWORD:
+        return "Unauthorized: Password salah", 401
     db = get_db()
     rows = db.execute(
         "SELECT kode, tipe_hp, merek, jenis_tg, alternatif FROM hp ORDER BY kode"
@@ -147,8 +151,14 @@ def export_csv():
     )
 
 
+IMPORT_PASSWORD = "bangkevin523"
+
 @app.post("/api/hp/import")
 def import_csv():
+    pwd = request.form.get("pwd")
+    if pwd != IMPORT_PASSWORD:
+        return jsonify({"error": "Password salah! Akses ditolak."}), 401
+
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "File tidak ditemukan"}), 400
@@ -156,7 +166,14 @@ def import_csv():
     try:
         content = file.stream.read().decode("utf-8-sig")
         stream = io.StringIO(content)
-        reader = csv.reader(stream)
+        
+        try:
+            dialect = csv.Sniffer().sniff(content[:2048])
+            reader = csv.reader(stream, dialect)
+        except csv.Error:
+            stream.seek(0)
+            reader = csv.reader(stream, delimiter=';' if ';' in content else ',')
+
         headers = [h.strip().upper() for h in next(reader)]
 
         required = {"KODE", "TIPE HP", "MEREK"}

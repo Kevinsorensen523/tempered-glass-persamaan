@@ -458,11 +458,18 @@
     <div class="modal-icon warn">⚠️</div>
     <h2>Konfirmasi Import Data</h2>
     <p>File <strong id="importFileName"></strong> siap diimport.</p>
+    
+    <!-- TAMBAHKAN INI: Input Password -->
+    <div style="margin: 15px 0;">
+      <label style="font-size: 0.75rem; font-weight: 700; color: var(--navy); display: block; margin-bottom: 5px; letter-spacing: 0.05em;">PASSWORD OTORISASI</label>
+      <input type="password" id="importPassword" placeholder="Masukkan password admin..." 
+             style="width: 100%; padding: 10px; border: 1.5px solid var(--border); border-radius: 8px; outline: none; font-size: 0.9rem;">
+    </div>
+
     <div class="modal-notice">
       <strong>⚠ Perhatian</strong>
       Seluruh data yang ada saat ini akan <strong>dihapus</strong> dan digantikan
-      dengan data dari file CSV.<br>
-      Backup otomatis akan dibuat sebelum data lama dihapus.
+      dengan data dari file CSV.
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="cancelImport()">Batal</button>
@@ -535,8 +542,17 @@
 
   // ── export ─────────────────────────────────────────────────────────────────
   function exportCSV() {
-    window.location.href = "/api/hp/export";
-    toast("Data sedang diunduh…", "info");
+    const password = prompt("Masukkan password untuk Export Data:");
+    if (password === null) return; // Batal jika tekan cancel
+
+    if (password.trim() === "") {
+        toast("❌ Password tidak boleh kosong!", "error");
+        return;
+    }
+    
+    // Redirect dengan parameter password
+    window.location.href = `/api/hp/export?pwd=${encodeURIComponent(password)}`;
+    toast("Memproses export data...", "info");
   }
 
   // ── import flow ────────────────────────────────────────────────────────────
@@ -545,7 +561,15 @@
     pendingFile = input.files[0];
     document.getElementById("importFileName").textContent = pendingFile.name;
     document.getElementById("importOverlay").classList.add("open");
+    // Fokus otomatis ke input password saat modal buka
+    setTimeout(() => document.getElementById("importPassword").focus(), 100);
     input.value = "";
+  }
+
+  function cancelImport() {
+    pendingFile = null;
+    document.getElementById("importPassword").value = ""; // Reset password
+    document.getElementById("importOverlay").classList.remove("open");
   }
 
   function cancelImport() {
@@ -554,25 +578,43 @@
   }
 
   async function doImport() {
-    document.getElementById("importOverlay").classList.remove("open");
+    const pwdInput = document.getElementById("importPassword");
+    const password = pwdInput.value;
+
+    if (!password) {
+        toast("❌ Password wajib diisi!", "error");
+        pwdInput.focus();
+        return;
+    }
+
     if (!pendingFile) return;
 
     const fd = new FormData();
     fd.append("file", pendingFile);
-    pendingFile = null;
+    fd.append("pwd", password); // Kirim password ke server
+
+    // Tutup modal
+    document.getElementById("importOverlay").classList.remove("open");
+    toast("Sedang memproses import...", "info");
 
     try {
       const resp = await fetch("/api/hp/import", { method: "POST", body: fd });
       const json = await resp.json();
+      
+      pwdInput.value = ""; // Bersihkan password
+
       if (resp.ok) {
         await loadData(document.getElementById("searchInput").value.trim());
-        const backupMsg = json.backup ? " Backup data lama tersimpan di folder backups/." : "";
+        const backupMsg = json.backup ? " Backup data lama tersimpan." : "";
         toast(`✅ Berhasil mengimpor ${json.imported} data.${backupMsg}`, "success");
       } else {
+        // Jika password salah (401), tampilkan pesan error dari server
         toast(`❌ ${json.error || "Gagal mengimpor."}`, "error");
       }
     } catch (e) {
       toast("❌ Terjadi kesalahan jaringan.", "error");
+    } finally {
+      pendingFile = null;
     }
   }
 
