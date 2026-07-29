@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 hp_data.db
 backups/
+reports/
 *.csv
 !template_import_tg.csv
 *.xlsx
