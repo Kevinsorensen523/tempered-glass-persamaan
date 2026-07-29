@@ -108,6 +108,20 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/hp-baru")
+def hp_baru_page():
+    return render_template("hp_baru.html")
+
+
+@app.get("/api/hp-baru")
+def api_hp_baru():
+    report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports", "new_phone_candidates.json")
+    if not os.path.exists(report_path):
+        return jsonify({"generated_at": None, "new_candidates": []})
+    with open(report_path) as f:
+        return jsonify(json.load(f))
+
+
 @app.get("/api/hp")
 def list_hp():
     q = request.args.get("q", "").strip()
