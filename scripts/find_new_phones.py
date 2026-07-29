@@ -20,9 +20,9 @@ Hasil baru (yang belum pernah dilaporkan) ditulis ke reports/new_phone_candidate
 import sqlite3
 import json
 import os
+import re
 import urllib.request
 import urllib.parse
-import difflib
 from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +49,44 @@ BRAND_QIDS = {
     "Motorola": "Q259011",
     "OnePlus": "Q16499972",
 }
+
+# nama manufacturer versi Wikidata (bisa macam-macam: "Apple Inc.", "Samsung
+# Electronics", dst) -> merek pendek sesuai konvensi kolom `merek` di DB
+MANUFACTURER_TO_MEREK = {
+    "samsung electronics": "SAMSUNG",
+    "samsung group": "SAMSUNG",
+    "xiaomi": "XIAOMI",
+    "oppo": "OPPO",
+    "vivo": "VIVO",
+    "infinix": "INFINIX",
+    "infinix mobility": "INFINIX",
+    "realme": "REALME",
+    "tecno mobile": "TECNO",
+    "tecno": "TECNO",
+    "itel mobile": "ITEL",
+    "itel": "ITEL",
+    "apple inc.": "APPLE",
+    "apple": "APPLE",
+    "huawei": "HUAWEI",
+    "honor device co., ltd.": "HONOR",
+    "honor": "HONOR",
+    "motorola": "MOTOROLA",
+    "motorola mobility": "MOTOROLA",
+    "oneplus": "ONEPLUS",
+}
+
+# kata-kata yang gak signifikan buat pembeda model, dibuang sebelum dibandingkan
+NOISE_WORDS = {"GALAXY", "5G", "4G", "LTE", "SMARTPHONE"}
+
+
+def normalize_merek(manufacturer_label):
+    return MANUFACTURER_TO_MEREK.get(manufacturer_label.strip().lower())
+
+
+def model_tokens(text):
+    text = re.sub(r"[()]", " ", text.upper())
+    words = re.findall(r"[A-Z0-9]+", text)
+    return {w for w in words if w not in NOISE_WORDS}
 
 
 def fetch_wikidata_phones(since_date="2024-01-01"):
@@ -80,19 +118,29 @@ def fetch_wikidata_phones(since_date="2024-01-01"):
     return results
 
 
-def load_existing_tipe_hp():
+def load_existing_by_merek():
+    """merek -> set(frozenset token model) buat semua tipe_hp yg ada di sistem."""
     db = sqlite3.connect(DB)
-    rows = db.execute("SELECT DISTINCT tipe_hp FROM hp").fetchall()
-    return [r[0] for r in rows]
+    rows = db.execute("SELECT DISTINCT merek, tipe_hp FROM hp").fetchall()
+    by_merek = {}
+    for merek, tipe_hp in rows:
+        by_merek.setdefault(merek.strip().upper(), []).append(model_tokens(tipe_hp))
+    return by_merek
 
 
-def is_similar(candidate, existing_list, threshold=0.55):
-    cand_norm = candidate.upper()
-    for existing in existing_list:
-        ratio = difflib.SequenceMatcher(None, cand_norm, existing.upper()).ratio()
-        if ratio >= threshold:
-            return True
-        if cand_norm in existing.upper() or existing.upper() in cand_norm:
+def already_exists(manufacturer_label, model_label, existing_by_merek):
+    merek = normalize_merek(manufacturer_label)
+    if merek is None or merek not in existing_by_merek:
+        return False  # gak bisa dipastikan merek-nya, jangan diam2 dianggap "sudah ada"
+    cand_tokens = model_tokens(model_label)
+    if not cand_tokens:
+        return False
+    for existing_tokens in existing_by_merek[merek]:
+        if not existing_tokens:
+            continue
+        # cocok kalau salah satu token-set adalah subset dari yg lain
+        # (nangkep beda penulisan spt "Galaxy A35 5G" vs "A35")
+        if cand_tokens <= existing_tokens or existing_tokens <= cand_tokens:
             return True
     return False
 
@@ -112,7 +160,7 @@ def save_seen(seen_set):
 
 def main():
     phones = fetch_wikidata_phones()
-    existing = load_existing_tipe_hp()
+    existing_by_merek = load_existing_by_merek()
     seen = load_seen()
 
     new_candidates = []
@@ -122,7 +170,7 @@ def main():
         key = full_name.upper()
         if key in seen:
             continue
-        if is_similar(full_name, existing):
+        if already_exists(p["manufacturer"], p["label"], existing_by_merek):
             newly_seen.add(key)  # udah ada di sistem, jangan laporin lagi ke depannya
             continue
         new_candidates.append(p)
