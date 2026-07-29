@@ -6,5 +6,6 @@ hp_data.db
 backups/
 *.csv
 !template_import_tg.csv
+*.xlsx
 .env
 .DS_Store
