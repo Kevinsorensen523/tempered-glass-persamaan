@@ -4,6 +4,9 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
+import threading
 from datetime import datetime
 
 from flask import Flask, g, jsonify, render_template, request, send_file
@@ -11,6 +14,12 @@ from flask import Flask, g, jsonify, render_template, request, send_file
 app = Flask(__name__)
 DB_PATH = "hp_data.db"
 BACKUP_DIR = "backups"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+NEW_PHONE_REPORT = os.path.join(REPORTS_DIR, "new_phone_candidates.json")
+NEW_PHONE_SEEN = os.path.join(REPORTS_DIR, "new_phone_seen.json")
+NEW_PHONE_REFRESH_LOCK = os.path.join(REPORTS_DIR, "refresh.lock")
+NEW_PHONE_SCRIPT = os.path.join(BASE_DIR, "scripts", "find_new_phones.py")
 
 
 # ── database ──────────────────────────────────────────────────────────────────
@@ -115,11 +124,77 @@ def hp_baru_page():
 
 @app.get("/api/hp-baru")
 def api_hp_baru():
-    report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports", "new_phone_candidates.json")
-    if not os.path.exists(report_path):
+    if not os.path.exists(NEW_PHONE_REPORT):
         return jsonify({"generated_at": None, "new_candidates": []})
-    with open(report_path) as f:
+    with open(NEW_PHONE_REPORT) as f:
         return jsonify(json.load(f))
+
+
+@app.post("/api/hp-baru/mark")
+def mark_hp_baru_done():
+    """Tandai satu kandidat HP baru sebagai selesai diproses (sudah dimasukin
+    ke DB / gak relevan) — dihapus dari daftar pending & gak bakal dilaporin
+    lagi sama cron find_new_phones.py ke depannya."""
+    key = (request.get_json(silent=True) or {}).get("key", "").strip()
+    if not key:
+        return jsonify({"error": "key wajib diisi"}), 400
+
+    seen = set()
+    if os.path.exists(NEW_PHONE_SEEN):
+        with open(NEW_PHONE_SEEN) as f:
+            seen = set(json.load(f))
+    seen.add(key)
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    with open(NEW_PHONE_SEEN, "w") as f:
+        json.dump(sorted(seen), f, ensure_ascii=False, indent=2)
+
+    if os.path.exists(NEW_PHONE_REPORT):
+        with open(NEW_PHONE_REPORT) as f:
+            report = json.load(f)
+        report["new_candidates"] = [p for p in report.get("new_candidates", []) if p.get("key") != key]
+        with open(NEW_PHONE_REPORT, "w") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+
+    return jsonify({"marked": key})
+
+
+def _run_hp_baru_refresh():
+    """Jalanin scripts/find_new_phones.py di thread background (dipanggil dari
+    endpoint refresh), biar request dari browser gak nunggu ~15-20 detik dan
+    ketimpuk gunicorn worker timeout default (30s, gak di-override di systemd
+    unit). Output digabung ke reports/cron.log yg sama kayak run cron mingguan."""
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    try:
+        with open(os.path.join(REPORTS_DIR, "cron.log"), "a") as log:
+            subprocess.run(
+                [sys.executable, NEW_PHONE_SCRIPT],
+                cwd=BASE_DIR, stdout=log, stderr=subprocess.STDOUT, timeout=120,
+            )
+    finally:
+        try:
+            os.remove(NEW_PHONE_REFRESH_LOCK)
+        except FileNotFoundError:
+            pass
+
+
+@app.post("/api/hp-baru/refresh")
+def refresh_hp_baru():
+    """Trigger manual cari HP baru sekarang, gak nunggu cron Senin. Dikunci
+    pakai lock file (bukan cuma flag in-memory) biar aman kalau dua request
+    nyasar ke worker gunicorn yg beda."""
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    try:
+        fd = os.open(NEW_PHONE_REFRESH_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        return jsonify({"error": "Refresh masih berjalan, tunggu sebentar."}), 409
+    threading.Thread(target=_run_hp_baru_refresh, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.get("/api/hp-baru/refresh-status")
+def refresh_hp_baru_status():
+    return jsonify({"running": os.path.exists(NEW_PHONE_REFRESH_LOCK)})
 
 
 @app.get("/api/hp")

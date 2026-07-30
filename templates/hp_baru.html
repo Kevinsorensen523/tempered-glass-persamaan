@@ -66,6 +66,12 @@
     }
     .info-card strong { color: var(--text); }
     #genTime { font-weight: 700; color: var(--blue); }
+    .refresh-btn {
+      display: block; margin-top: 12px; background: var(--blue); color: #fff; border: none;
+      border-radius: 8px; padding: 8px 16px; font-size: .8rem; font-weight: 700; cursor: pointer;
+    }
+    .refresh-btn:hover { opacity: .88; }
+    .refresh-btn:disabled { opacity: .5; cursor: default; }
 
     .table-card { background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
     table { width: 100%; border-collapse: collapse; }
@@ -83,6 +89,12 @@
     }
     .empty-row td { text-align: center; padding: 40px; color: var(--muted); }
     .empty-icon { font-size: 2rem; display: block; margin-bottom: 8px; }
+    .mark-done-btn {
+      background: var(--success); color: #fff; border: none; border-radius: 6px;
+      padding: 6px 12px; font-size: .75rem; font-weight: 700; cursor: pointer;
+    }
+    .mark-done-btn:hover { opacity: .88; }
+    .mark-done-btn:disabled { opacity: .5; cursor: default; }
 
     footer { text-align: center; padding: 18px; font-size: .72rem; color: var(--muted); }
   </style>
@@ -104,10 +116,13 @@
 
 <main>
   <div class="info-card">
-    Daftar ini dihasilkan otomatis tiap minggu dari data terbuka Wikidata (bukan hasil scraping GSMArena),
-    dibandingkan dengan data yang sudah ada di sistem. <strong>Cakupan paling lengkap untuk Samsung &amp; Apple</strong> —
-    merek lain (Infinix, Tecno, itel, realme, Vivo, Oppo) belum ter-cover baik, jadi tetap perlu dicek manual.
+    Daftar ini dihasilkan otomatis tiap minggu dari dua sumber terbuka: <strong>Wikidata</strong> (kuat untuk
+    Samsung &amp; Apple) dan <strong>sertifikasi Postel/SDPPI</strong> (kuat untuk merek budget seperti
+    Infinix, Tecno, itel, realme, Vivo/iQOO, Redmi/POCO — wajib sertifikasi buat legal dijual di Indonesia),
+    dibandingkan dengan data yang sudah ada di sistem. Kandidat tetap muncul di sini sampai ditandai
+    <strong>"Tandai Selesai"</strong> atau memang sudah ditemukan cocok di database.
     <br>Terakhir diperbarui: <span id="genTime">memuat…</span>
+    <button id="refreshBtn" class="refresh-btn">🔄 Refresh Sekarang</button>
   </div>
 
   <div class="table-card">
@@ -117,16 +132,18 @@
           <th>Tanggal Rilis</th>
           <th>Merek</th>
           <th>Nama Model</th>
+          <th>Sumber</th>
+          <th>Aksi</th>
         </tr>
       </thead>
       <tbody id="tableBody">
-        <tr class="empty-row"><td colspan="3">Memuat data…</td></tr>
+        <tr class="empty-row"><td colspan="5">Memuat data…</td></tr>
       </tbody>
     </table>
   </div>
 </main>
 
-<footer>Database Tempered Glass &nbsp;·&nbsp; Sumber: Wikidata (CC0)</footer>
+<footer>Database Tempered Glass &nbsp;·&nbsp; Sumber: Wikidata (CC0) &amp; Sertifikasi Postel/SDPPI</footer>
 
 <script>
   function esc(s) {
@@ -147,7 +164,7 @@
 
     const data = json.new_candidates || [];
     if (data.length === 0) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="3">
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="5">
         <span class="empty-icon">✅</span>
         Tidak ada kandidat HP baru saat ini.
       </td></tr>`;
@@ -155,13 +172,75 @@
     }
 
     tbody.innerHTML = data.map(p => `
-      <tr>
+      <tr data-key="${esc(p.key)}">
         <td>${esc(p.release_date)}</td>
         <td><span class="brand-badge">${esc(p.manufacturer)}</span></td>
         <td>${esc(p.label)}</td>
+        <td>${esc(p.source === "postel" ? "Postel/SDPPI" : "Wikidata")}</td>
+        <td><button class="mark-done-btn" data-key="${esc(p.key)}">Tandai Selesai</button></td>
       </tr>
     `).join("");
   }
+
+  async function markDone(key, row) {
+    const btn = row.querySelector(".mark-done-btn");
+    btn.disabled = true;
+    btn.textContent = "Menyimpan…";
+    try {
+      const resp = await fetch("/api/hp-baru/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      if (!resp.ok) throw new Error("gagal simpan");
+      row.remove();
+      const tbody = document.getElementById("tableBody");
+      if (!tbody.querySelector("tr:not(.empty-row)")) {
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="5">
+          <span class="empty-icon">✅</span>
+          Tidak ada kandidat HP baru saat ini.
+        </td></tr>`;
+      }
+    } catch {
+      btn.disabled = false;
+      btn.textContent = "Tandai Selesai";
+      alert("Gagal menandai selesai, coba lagi.");
+    }
+  }
+
+  document.getElementById("tableBody").addEventListener("click", (e) => {
+    const btn = e.target.closest(".mark-done-btn");
+    if (!btn) return;
+    markDone(btn.dataset.key, btn.closest("tr"));
+  });
+
+  async function refreshNow() {
+    const btn = document.getElementById("refreshBtn");
+    btn.disabled = true;
+    btn.textContent = "🔄 Mencari HP baru…";
+
+    const startResp = await fetch("/api/hp-baru/refresh", { method: "POST" });
+    if (!startResp.ok) {
+      const err = await startResp.json().catch(() => ({}));
+      alert(err.error || "Gagal memulai refresh.");
+      btn.disabled = false;
+      btn.textContent = "🔄 Refresh Sekarang";
+      return;
+    }
+
+    const poll = setInterval(async () => {
+      const statusResp = await fetch("/api/hp-baru/refresh-status");
+      const status = await statusResp.json();
+      if (!status.running) {
+        clearInterval(poll);
+        await loadReport();
+        btn.disabled = false;
+        btn.textContent = "🔄 Refresh Sekarang";
+      }
+    }, 2000);
+  }
+
+  document.getElementById("refreshBtn").addEventListener("click", refreshNow);
 
   loadReport();
 </script>

@@ -8,12 +8,45 @@ Used by store staff to search "what glass fits phone X" and to bulk import/expor
 the catalog via CSV. Indonesian-language UI (`lang="id"`).
 
 **Active features:**
-- Search/list HP records (`GET /api/hp?q=`) — matches kode, tipe_hp, merek, jenis_tg, alternatif
+- Search/list HP records (`GET /api/hp?q=`) — matches kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg
 - CSV template download (`GET /api/hp/template`)
 - Password-gated CSV export (`GET /api/hp/export?pwd=`)
 - Password-gated CSV import — **full replace**: wipes table and re-inserts all rows,
   auto-backs up existing data to `backups/backup_<timestamp>.csv` first (`POST /api/hp/import`)
 - Single-page frontend (`templates/index.html`, vanilla HTML/CSS/JS, no framework, no build step)
+- **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
+  (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
+  crontab) pulls from **two** open sources and merges results, brand-scoped token
+  matching against existing `merek`+`tipe_hp` (see `already_exists()` in the
+  script — do NOT go back to naive `difflib` ratio matching, it produces false
+  positives/negatives, see git history commit "fix: use brand-scoped token
+  matching"):
+  1. Wikidata SPARQL endpoint (`fetch_wikidata_phones()`) — strong for Samsung/Apple,
+     sparse for budget/regional brands (release date property rarely filled in).
+  2. Sertifikasi Postel/SDPPI GraphQL endpoint (`fetch_postel_phones()`,
+     `sertifikasi.postel.go.id/svc/master/query`) — added 2026-07-30 to cover the
+     gap. Every phone legally sold in Indonesia must be certified here, so it's
+     strong precisely for the budget/regional brands Wikidata misses (Infinix,
+     Tecno, itel, realme, Vivo/iQOO, Xiaomi/Redmi/POCO). It's a public, unauthenticated
+     endpoint (no login, no captcha — confirmed by inspecting real browser network
+     traffic) but **does require `Origin`/`Referer` headers matching the site and a
+     browser-like `User-Agent`**, or it returns `{"errors":[{"message":"forbidden"}]}`.
+     Do not remove those headers. Sub-brands (Redmi/POCO under Xiaomi, iQOO under vivo)
+     report under their own `merk` value in Postel's data, not the parent brand — see
+     `MANUFACTURER_TO_MEREK` in the script for the mapping back to this DB's `merek`
+     convention; extend that dict (not `already_exists()`) if more sub-brands show up.
+  Results are merged, cross-source deduped (so the same phone found by both sources
+  isn't reported twice), and land in `reports/new_phone_candidates.json` (gitignored,
+  each candidate has a `"source"` field (`"wikidata"`/`"postel"`) and a stable `"key"`
+  used for dedup/marking).
+  **Report is a pending list that accumulates across runs, not overwritten wholesale**
+  (`load_pending_candidates()` in the script) — a candidate stays listed until either
+  (a) it's found to already match the DB (`already_exists()`, e.g. staff imported it
+  via CSV without using the UI), or (b) staff clicks "Tandai Selesai" on `/hp-baru`,
+  which calls `POST /api/hp-baru/mark` (`app.py`) to drop it from the report and add
+  its key to `reports/new_phone_seen.json` permanently. Do not change this back to
+  "show once then forget" — that was the original design and it silently dropped
+  candidates staff hadn't gotten to yet before the next Monday's cron overwrote them.
 
 ## Tech Stack
 
@@ -36,6 +69,12 @@ Table `hp` (auto-migrated on first request via `PRAGMA table_info` check in `get
 | merek        | TEXT    | brand                                   |
 | jenis_tg     | TEXT    | tempered glass type, default `''`       |
 | alternatif   | TEXT    | JSON array string of alternative kodes, default `'[]'` |
+| merek_tg     | TEXT    | tempered glass brand (e.g. "Spigen", "No Brand"), default `''` — separate from `merek` (phone brand) |
+
+`alternatif` relationships are meant to be **symmetric**: if kode A lists kode B as
+an alternative, B should list A back. Not enforced by the schema/app — was manually
+fixed once (see git history), watch for drift if `alternatif` is edited outside the
+normal import flow.
 
 `alternatif` is stored as a JSON string and parsed with `_parse_alternatif()` on import
 (accepts JSON array, or `;`/`,`-separated fallback) and `_row_to_dict()` on read.
@@ -82,6 +121,13 @@ Table `hp` (auto-migrated on first request via `PRAGMA table_info` check in `get
 2. Add a pytest suite covering the scenarios above (no test infra currently set up: would need `pytest`,
    probably a temp-DB fixture overriding `DB_PATH`)
 3. Consider splitting `app.py` if more routes/entities are added (currently under the 800-line guideline, no action needed yet)
+
+Sources tried and rejected for the HP Baru finder (see `scripts/find_new_phones.py` for what's
+actually used): GSMArena (robots.txt explicitly disallows ClaudeBot/anthropic-ai + RSL license
+forbids ai-inference/ai-train), kimovil.com / 91mobiles.com / smartprix.com (permissive robots.txt
+but Cloudflare-blocked, 403 on any non-browser request), phonedb.net (accessible and legal, but only
+exposes a "recently added to their DB" homepage feed, not a real per-brand catalog — coverage for
+budget brands is inconsistent/timing-dependent).
 
 ## Future/Speculative Work
 
