@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import zipfile
 from datetime import datetime
 
 from flask import Flask, g, jsonify, render_template, request, send_file
@@ -36,7 +37,8 @@ def get_db():
                 merek      TEXT NOT NULL,
                 jenis_tg   TEXT NOT NULL DEFAULT '',
                 alternatif TEXT NOT NULL DEFAULT '[]',
-                merek_tg   TEXT NOT NULL DEFAULT ''
+                merek_tg   TEXT NOT NULL DEFAULT '',
+                kode_merek_tg TEXT NOT NULL DEFAULT ''
             )
         """)
         # migrate: add new columns if missing (for existing DBs)
@@ -47,6 +49,8 @@ def get_db():
             g.db.execute("ALTER TABLE hp ADD COLUMN alternatif TEXT NOT NULL DEFAULT '[]'")
         if "merek_tg" not in existing_cols:
             g.db.execute("ALTER TABLE hp ADD COLUMN merek_tg TEXT NOT NULL DEFAULT ''")
+        if "kode_merek_tg" not in existing_cols:
+            g.db.execute("ALTER TABLE hp ADD COLUMN kode_merek_tg TEXT NOT NULL DEFAULT ''")
         g.db.commit()
     return g.db
 
@@ -73,6 +77,7 @@ def _row_to_dict(r):
         "jenis_tg":  r["jenis_tg"],
         "alternatif": alt,
         "merek_tg":  r["merek_tg"],
+        "kode_merek_tg": r["kode_merek_tg"],
     }
 
 
@@ -200,22 +205,239 @@ def refresh_hp_baru_status():
 @app.get("/api/hp")
 def list_hp():
     q = request.args.get("q", "").strip()
-    db = get_db()
+    merek = request.args.get("merek", "").strip()
+    jenis_tg = request.args.get("jenis_tg", "").strip()
+    merek_tg = request.args.get("merek_tg", "").strip()
+
+    where = []
+    params: list[str] = []
     if q:
         like = f"%{q}%"
-        rows = db.execute(
-            "SELECT id, kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg FROM hp "
-            "WHERE kode LIKE ? OR tipe_hp LIKE ? OR merek LIKE ? "
-            "   OR jenis_tg LIKE ? OR alternatif LIKE ? OR merek_tg LIKE ? "
-            "ORDER BY kode",
-            (like, like, like, like, like, like),
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT id, kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg FROM hp ORDER BY kode"
-        ).fetchall()
+        where.append(
+            "(kode LIKE ? OR tipe_hp LIKE ? OR merek LIKE ? "
+            "OR jenis_tg LIKE ? OR alternatif LIKE ? OR merek_tg LIKE ? OR kode_merek_tg LIKE ?)"
+        )
+        params += [like, like, like, like, like, like, like]
+    if merek:
+        where.append("merek = ?")
+        params.append(merek)
+    if jenis_tg:
+        where.append("jenis_tg = ?")
+        params.append(jenis_tg)
+    if merek_tg:
+        where.append("merek_tg = ?")
+        params.append(merek_tg)
+
+    sql = "SELECT id, kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg FROM hp"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY kode"
+
+    db = get_db()
+    rows = db.execute(sql, params).fetchall()
     total = db.execute("SELECT COUNT(*) FROM hp").fetchone()[0]
     return jsonify({"data": [_row_to_dict(r) for r in rows], "total": total})
+
+
+@app.get("/api/hp/filters")
+def hp_filter_options():
+    """Nilai unik untuk isi dropdown filter (merek, jenis TG, merek TG)."""
+    db = get_db()
+
+    def distinct(col: str) -> list[str]:
+        rows = db.execute(
+            f"SELECT DISTINCT {col} FROM hp WHERE TRIM({col}) != '' ORDER BY {col} COLLATE NOCASE"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    return jsonify({
+        "merek": distinct("merek"),
+        "jenis_tg": distinct("jenis_tg"),
+        "merek_tg": distinct("merek_tg"),
+        "kode_merek_tg": distinct("kode_merek_tg"),
+    })
+
+
+# ── export JSON untuk bot upload ────────────────────────────────────────────
+# Aturan ini disepakati manual sama user (bukan tebakan):
+# - 1 file JSON = 1 listing = array FLAT [{value, sku, price, stock}, ...]
+#   (persis format yang bot user harapkan, tanpa wrapper product_name).
+# - Nama file = judul deskriptif ("Tempered Glass {merek} {contoh model} dll
+#   {merek_tg} {kode_merek_tg} {jenis_tg}"), bukan cuma nama brand.
+# - 1 listing = 1 (kode_merek_tg, merek); kalau > BOT_EXPORT_VARIANT_LIMIT
+#   varian, dipecah per "seri" (heuristik: token nama sebelum ketemu angka
+#   model, mis. "REDMI NOTE 8" -> seri "REDMI NOTE", "SAMSUNG A50" -> seri
+#   "A"); kalau 1 seri masih kelebihan, dipecah lagi per 50 (Part 1/2/dst).
+# - Varian diurutkan "natural" berdasar angka model pertama (11, 15, 17 — bukan
+#   urutan sembarang dari DB).
+# - "value" (nama varian yang tampil ke bot) maks 20 karakter: nama merek
+#   dibuang (udah kewakilan di judul file), spasi di sekitar "/" dirapatkan,
+#   baru dipotong keras di karakter ke-20 kalau masih kelebihan.
+# - "sku" tetap dibangun dari value ASLI (bukan yang dipotong) + kode TG-nya
+#   sendiri, supaya tetap unik/tertelusur walau "value" tampilnya disingkat.
+
+BOT_EXPORT_VARIANT_LIMIT = 50
+BOT_EXPORT_VALUE_MAX_LEN = 20
+_SERIES_DIGIT_RE = re.compile(r"\d")
+_LEADING_ALPHA_RE = re.compile(r"^([A-Za-z]+)")
+_MODEL_NUM_RE = re.compile(r"\d+")
+_SLASH_SPACE_RE = re.compile(r"\s*/\s*")
+_FILENAME_BAD_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def _strip_merek_prefix(tipe_hp: str, merek: str) -> str:
+    tokens = tipe_hp.split()
+    if tokens and tokens[0].upper() == merek.upper():
+        return " ".join(tokens[1:])
+    return tipe_hp
+
+
+def _detect_series(tipe_hp: str, merek: str) -> str:
+    sisa = _strip_merek_prefix(tipe_hp, merek)
+    tokens = sisa.split()
+    series_tokens: list[str] = []
+    for t in tokens:
+        if _SERIES_DIGIT_RE.search(t):
+            break
+        series_tokens.append(t)
+    if series_tokens:
+        return " ".join(series_tokens)
+    if tokens:
+        m = _LEADING_ALPHA_RE.match(tokens[0])
+        if m:
+            return m.group(1)
+    return "LAINNYA"
+
+
+def _natural_sort_key(tipe_hp: str, merek: str) -> tuple[int, str]:
+    """Urutan berdasar angka model pertama (S21 < S22 < S24), fallback abjad."""
+    sisa = _strip_merek_prefix(tipe_hp, merek)
+    m = _MODEL_NUM_RE.search(sisa)
+    num = int(m.group()) if m else 0
+    return (num, sisa)
+
+
+def _clean_sku_value(value: str) -> str:
+    return value.replace(" ", "").replace("/", "-")
+
+
+def _shorten_value(value: str, merek: str, limit: int = BOT_EXPORT_VALUE_MAX_LEN) -> str:
+    """Value yang ditampilkan ke bot, maks `limit` karakter: buang prefix
+    merek (udah kewakilan di judul file), rapatkan spasi di sekitar '/', baru
+    potong keras kalau masih kelebihan."""
+    v = _strip_merek_prefix(value, merek)
+    v = _SLASH_SPACE_RE.sub("/", v)
+    v = " ".join(v.split())
+    if len(v) <= limit:
+        return v
+    return v[:limit].rstrip()
+
+
+def _sanitize_filename(name: str) -> str:
+    name = _FILENAME_BAD_CHARS_RE.sub("", name)
+    return " ".join(name.split())[:150]
+
+
+def _build_title(merek: str, kode_merek_tg: str, jenis: str, merek_tg: str, crows: list) -> str:
+    sample = [_strip_merek_prefix(r["tipe_hp"], merek) for r in crows[:5]]
+    title = f"Tempered Glass {merek} {' '.join(sample)}"
+    if len(crows) > 5:
+        title += " dll"
+    title += f" {merek_tg} {kode_merek_tg} {jenis}"
+    return _sanitize_filename(title)
+
+
+def _chunk_variant_rows(rows: list) -> list[list]:
+    """rows: baris utk SATU (kode_merek_tg, merek), diurutkan natural. Return
+    list of row-lists yang masing-masing <= BOT_EXPORT_VARIANT_LIMIT."""
+    rows = sorted(rows, key=lambda r: _natural_sort_key(r["tipe_hp"], r["merek"]))
+    if len(rows) <= BOT_EXPORT_VARIANT_LIMIT:
+        return [rows]
+    by_series: dict[str, list] = {}
+    order: list[str] = []
+    for r in rows:
+        s = _detect_series(r["tipe_hp"], r["merek"])
+        if s not in by_series:
+            by_series[s] = []
+            order.append(s)
+        by_series[s].append(r)
+    chunks: list[list] = []
+    for s in order:
+        srows = by_series[s]  # tetap urut natural (dibangun dari rows yg udah disortir)
+        if len(srows) <= BOT_EXPORT_VARIANT_LIMIT:
+            chunks.append(srows)
+        else:
+            for i in range(0, len(srows), BOT_EXPORT_VARIANT_LIMIT):
+                chunks.append(srows[i:i + BOT_EXPORT_VARIANT_LIMIT])
+    return chunks
+
+
+@app.get("/api/hp/export-bot")
+def export_bot_json():
+    kode_merek_tg = request.args.get("kode_merek_tg", "").strip()
+    if not kode_merek_tg:
+        return jsonify({"error": "kode_merek_tg wajib diisi"}), 400
+    try:
+        price = int(request.args.get("price", "0"))
+    except ValueError:
+        return jsonify({"error": "price harus angka"}), 400
+    if price <= 0:
+        return jsonify({"error": "price wajib diisi dan > 0"}), 400
+    try:
+        stock = int(request.args.get("stock", "1000"))
+    except ValueError:
+        return jsonify({"error": "stock harus angka"}), 400
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT kode, tipe_hp, merek, jenis_tg, merek_tg, kode_merek_tg FROM hp "
+        "WHERE kode_merek_tg = ? ORDER BY merek, kode",
+        (kode_merek_tg,),
+    ).fetchall()
+    if not rows:
+        return jsonify({"error": f"Tidak ada data untuk kode_merek_tg={kode_merek_tg}"}), 404
+
+    by_merek: dict[str, list] = {}
+    order: list[str] = []
+    for r in rows:
+        m = r["merek"]
+        if m not in by_merek:
+            by_merek[m] = []
+            order.append(m)
+        by_merek[m].append(r)
+
+    buf = io.BytesIO()
+    used_names: set[str] = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for merek in order:
+            for crows in _chunk_variant_rows(by_merek[merek]):
+                jenis = crows[0]["jenis_tg"]
+                merek_tg = crows[0]["merek_tg"]
+                title = _build_title(merek, kode_merek_tg, jenis, merek_tg, crows)
+
+                fname = f"{title}.json"
+                dupe_i = 2
+                while fname in used_names:
+                    fname = f"{title} ({dupe_i}).json"
+                    dupe_i += 1
+                used_names.add(fname)
+
+                variants = []
+                for r in crows:
+                    full_value = " ".join(r["tipe_hp"].split())
+                    value = _shorten_value(full_value, merek)
+                    sku = f"{r['kode']}-{kode_merek_tg}-{merek}-{_clean_sku_value(full_value)}"
+                    variants.append({"value": value, "sku": sku, "price": price, "stock": stock})
+
+                zf.writestr(fname, json.dumps(variants, ensure_ascii=False, indent=2))
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"bot_export_{kode_merek_tg}_{ts}.zip",
+    )
 
 
 @app.get("/api/hp/template")
@@ -223,14 +445,15 @@ def download_template():
     """Unduh template CSV kosong dengan contoh pengisian."""
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG"])
+    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
     # contoh baris — KODE tanpa strip, ALTERNATIF diisi kode dipisah titik-koma (;)
     # MEREK TG diisi "No Brand" kalau tempered glass generik/gak bermerek
+    # KODE MEREK TG diisi kode SKU internal merek TG-nya (mis. "KA-A02"), kosongin kalau gak ada
     w.writerow(["HP001", "Galaxy S24 Ultra", "Samsung", "Privacy",
-                "HP001A;HP001B", "No Brand"])
-    w.writerow(["HP002", "iPhone 15 Pro Max", "Apple", "Anti Gores", "HP002X", "Spigen"])
-    w.writerow(["HP003", "Redmi Note 13 Pro", "Xiaomi", "Anti Blue Light", "", "No Brand"])
-    w.writerow(["HP004", "Pixel 8 Pro", "Google", "Full Cover", "", "No Brand"])
+                "HP001A;HP001B", "No Brand", ""])
+    w.writerow(["HP002", "iPhone 15 Pro Max", "Apple", "Anti Gores", "HP002X", "Spigen", ""])
+    w.writerow(["HP003", "Redmi Note 13 Pro", "Xiaomi", "Anti Blue Light", "", "No Brand", ""])
+    w.writerow(["HP004", "Pixel 8 Pro", "Google", "Full Cover", "", "No Brand", ""])
     buf.seek(0)
     return send_file(
         io.BytesIO(buf.getvalue().encode("utf-8-sig")),
@@ -248,14 +471,15 @@ def export_csv():
         return "Unauthorized: Password salah", 401
     db = get_db()
     rows = db.execute(
-        "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg FROM hp ORDER BY kode"
+        "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg FROM hp ORDER BY kode"
     ).fetchall()
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG"])
+    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
     for r in rows:
         alt_codes = _parse_alternatif(r["alternatif"])
-        w.writerow([r["kode"], r["tipe_hp"], r["merek"], r["jenis_tg"], ";".join(alt_codes), r["merek_tg"]])
+        w.writerow([r["kode"], r["tipe_hp"], r["merek"], r["jenis_tg"], ";".join(alt_codes),
+                    r["merek_tg"], r["kode_merek_tg"]])
     buf.seek(0)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return send_file(
@@ -314,9 +538,11 @@ def import_csv():
                 alt = _parse_alternatif(alt_raw)
                 merek_tg = (row[idx["MEREK TG"]].strip()
                             if "MEREK TG" in idx and idx["MEREK TG"] < len(row) else "")
+                kode_merek_tg = (row[idx["KODE MEREK TG"]].strip()
+                                 if "KODE MEREK TG" in idx and idx["KODE MEREK TG"] < len(row) else "")
                 if kode and tipe and merek:
                     rows_to_insert.append(
-                        (kode, tipe, merek, jenis, json.dumps(alt, ensure_ascii=False), merek_tg)
+                        (kode, tipe, merek, jenis, json.dumps(alt, ensure_ascii=False), merek_tg, kode_merek_tg)
                     )
             except IndexError:
                 continue
@@ -329,7 +555,7 @@ def import_csv():
         # backup data lama ke disk
         backup_created = False
         existing = db.execute(
-            "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg FROM hp ORDER BY kode"
+            "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg FROM hp ORDER BY kode"
         ).fetchall()
         if existing:
             os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -337,15 +563,17 @@ def import_csv():
             backup_path = os.path.join(BACKUP_DIR, f"backup_{ts}.csv")
             with open(backup_path, "w", newline="", encoding="utf-8-sig") as bf:
                 bw = csv.writer(bf)
-                bw.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG"])
+                bw.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
                 for r in existing:
-                    bw.writerow([r["kode"], r["tipe_hp"], r["merek"], r["jenis_tg"], r["alternatif"], r["merek_tg"]])
+                    bw.writerow([r["kode"], r["tipe_hp"], r["merek"], r["jenis_tg"], r["alternatif"],
+                                 r["merek_tg"], r["kode_merek_tg"]])
             backup_created = True
 
         # hapus semua, lalu insert baru
         db.execute("DELETE FROM hp")
         db.executemany(
-            "INSERT INTO hp (kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO hp (kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             rows_to_insert,
         )
         db.commit()

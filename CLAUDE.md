@@ -8,12 +8,19 @@ Used by store staff to search "what glass fits phone X" and to bulk import/expor
 the catalog via CSV. Indonesian-language UI (`lang="id"`).
 
 **Active features:**
-- Search/list HP records (`GET /api/hp?q=`) — matches kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg
+- Search/list HP records (`GET /api/hp?q=`) — matches kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg
 - CSV template download (`GET /api/hp/template`)
 - Password-gated CSV export (`GET /api/hp/export?pwd=`)
 - Password-gated CSV import — **full replace**: wipes table and re-inserts all rows,
   auto-backs up existing data to `backups/backup_<timestamp>.csv` first (`POST /api/hp/import`)
 - Single-page frontend (`templates/index.html`, vanilla HTML/CSS/JS, no framework, no build step)
+- **⚠️ Uncommitted (in progress):** new column `kode_merek_tg` (internal TG-brand SKU code,
+  e.g. `"KA-A02"`) being added end-to-end — schema migration in `get_db()`, `_row_to_dict()`,
+  search, template/export/import CSV (7th column `KODE MEREK TG`), and a new table column in
+  `templates/index.html`. Not yet committed as of 2026-08-10 — finish/verify before starting
+  unrelated work, or stash if picking up something else. See `docs/notes-ka-codes.md` for the
+  raw KA-A code list this column is meant to hold (user hadn't given import instructions as of
+  2026-07-30 — check if that's been resolved before assuming the list is unused).
 - **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
   (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
   crontab) pulls from **two** open sources and merges results, brand-scoped token
@@ -50,9 +57,11 @@ the catalog via CSV. Indonesian-language UI (`lang="id"`).
 
 ## Tech Stack
 
-- **Backend:** Flask (`app.py`, ~244 lines, all routes in one file), `sqlite3` stdlib driver (no ORM)
+- **Backend:** Flask (`app.py`, ~370 lines, all routes in one file), `sqlite3` stdlib driver (no ORM)
 - **DB:** SQLite file `hp_data.db` (gitignored, lives next to `app.py`)
-- **Frontend:** Single Jinja template `templates/index.html`, inline `<style>` + `<script>`, zero external dependencies (no CDN, no npm)
+- **Frontend:** Two Jinja templates — `templates/index.html` (main catalog UI) and
+  `templates/hp_baru.html` (HP Baru report viewer) — inline `<style>` + `<script>`, zero
+  external dependencies (no CDN, no npm)
 - **Server:** gunicorn in production (`run.sh`), Flask dev server (`debug=True`) when run directly
 - **Deploy:** `deploy.sh` provisions a Debian/Ubuntu venv; `tempered-glass.service` is the systemd unit (runs as `www-data`, working dir `/opt/tempered-glass`, port 8080)
 - No test framework, no linter/formatter config, no CI present in this repo.
@@ -70,6 +79,7 @@ Table `hp` (auto-migrated on first request via `PRAGMA table_info` check in `get
 | jenis_tg     | TEXT    | tempered glass type, default `''`       |
 | alternatif   | TEXT    | JSON array string of alternative kodes, default `'[]'` |
 | merek_tg     | TEXT    | tempered glass brand (e.g. "Spigen", "No Brand"), default `''` — separate from `merek` (phone brand) |
+| kode_merek_tg | TEXT   | internal TG-brand SKU code (e.g. "KA-A02"), default `''` — **uncommitted, in progress**, see Active Features |
 
 `alternatif` relationships are meant to be **symmetric**: if kode A lists kode B as
 an alternative, B should list A back. Not enforced by the schema/app — was manually
@@ -90,7 +100,7 @@ normal import flow.
 
 ## Known Issues / Security TODOs
 
-- **CRITICAL:** `EXPORT_PASSWORD` and `IMPORT_PASSWORD` are hardcoded plaintext in `app.py:128,154`
+- **CRITICAL:** `EXPORT_PASSWORD` and `IMPORT_PASSWORD` are hardcoded plaintext in `app.py:247,275`
   (`"bangkevin523"`), sent as query param (`?pwd=`) / form field. This is a real secret checked into
   git history. Should move to an environment variable at minimum; a real auth mechanism would be better.
   Sending the password as a GET query string (`/api/hp/export?pwd=`) also risks it leaking into server
@@ -110,17 +120,20 @@ normal import flow.
 - CSV import with malformed/missing `ALTERNATIF` column
 - CSV import with mixed delimiters (`csv.Sniffer` fallback logic in `import_csv`)
 - CSV import replacing data when `hp` table is empty (no backup should be created — verify `backup_created` stays `False`)
-- Search (`/api/hp?q=`) across all five LIKE-matched columns, including partial JSON matches inside `alternatif`
-- DB migration path: opening an old `hp_data.db` created before `jenis_tg`/`alternatif` columns existed
+- Search (`/api/hp?q=`) across all seven LIKE-matched columns, including partial JSON matches inside `alternatif`
+- DB migration path: opening an old `hp_data.db` created before `jenis_tg`/`alternatif`/`merek_tg`/`kode_merek_tg` columns existed
 - Wrong password on export/import (expect 401, no data leak in error body)
 - Concurrent import while another request is reading (SQLite locking behavior under gunicorn's 2 workers)
+- `kode_merek_tg` CSV round-trip (template → edit → import → export) now that it's a 7th column — untested since the column is brand new/uncommitted
 
 ## Next TODOs
 
-1. Move `EXPORT_PASSWORD`/`IMPORT_PASSWORD` to env vars (`.env`, gitignored — already in `.gitignore`)
-2. Add a pytest suite covering the scenarios above (no test infra currently set up: would need `pytest`,
+1. Finish and commit the in-progress `kode_merek_tg` column work (see Active Features) — currently
+   uncommitted local changes to `app.py` and `templates/index.html`.
+2. Move `EXPORT_PASSWORD`/`IMPORT_PASSWORD` to env vars (`.env`, gitignored — already in `.gitignore`)
+3. Add a pytest suite covering the scenarios above (no test infra currently set up: would need `pytest`,
    probably a temp-DB fixture overriding `DB_PATH`)
-3. Consider splitting `app.py` if more routes/entities are added (currently under the 800-line guideline, no action needed yet)
+4. Consider splitting `app.py` if more routes/entities are added (currently under the 800-line guideline, no action needed yet)
 
 Sources tried and rejected for the HP Baru finder (see `scripts/find_new_phones.py` for what's
 actually used): GSMArena (robots.txt explicitly disallows ClaudeBot/anthropic-ai + RSL license
