@@ -81,16 +81,20 @@ separate catalog for smartwatch tempered glass (`GET /smartwatch`, own DB file).
   figure from Vera. `jenis_tg` defaulted to `"Hydrogel"` for all 17 (matches the source
   machine), `merek_tg` to `"No Brand"` (in-house cut, not a purchased branded product) —
   revisit both if that assumption turns out wrong.
-  **Two-measurement entries, corrected 2026-08-27**: 7 of the source entries said "cetak 2
-  ukuran" (the machine cuts 2 acceptable sizes for that one model) — first attempt modeled
-  this as 2 separate rows cross-linked via `alternatif`, which read as confusing duplicate
-  rows once `Alternatif` was hidden from the table (user: "GTR 3 (Varian 2) ini kenapa masih
-  ada", "mksdnya alternatif" — the `alternatif` field was meant to be an in-row note, not a
-  reason to create a second visible row). **Fixed**: 1 row per model, both values written into
-  the same measurement field as free text (e.g. `diameter = "36.3mm atau 37mm"`, or per-side
-  for Persegi e.g. `lebar = "36mm atau 34mm"` when only one dimension differs between the two
-  cuts) — since these are TEXT columns this works without a schema change. Do not go back to
-  the 2-rows-plus-alternatif pattern for this kind of "two acceptable sizes" data.
+  **Two-measurement entries, settled 2026-08-27 after 3 iterations** — 7 of the source entries
+  said "cetak 2 ukuran" (the machine cuts 2 acceptable sizes for that one model: GTR 3, GT 6
+  Pro, Smartwatch S1 V2, Band 1, Curve 3 Ultra, Active 3 Premium, Watch S). What it settled on:
+  **2 separate rows per such model**, `tipe_smartwatch` suffixed `"(Ukuran 1)"`/`"(Ukuran 2)"`,
+  `alternatif` left empty on both (no cross-link — explicitly not wanted). What was tried and
+  rejected along the way, so the next change doesn't re-tread this:
+  1. 2 rows cross-linked via `alternatif` — confusing once `Alternatif` was hidden from the
+     table (raw kode like "SW0002" showed with no context: user "GTR 3 (Varian 2) ini kenapa
+     masih ada").
+  2. Merged into 1 row per model with both values as free text in the same field (e.g.
+     `diameter = "36.3mm atau 37mm"`) — user explicitly rejected this next ("ini gpp dibuat 2
+     versi kalo emg 2 ukuran" — 2 separate rows are fine when there really are 2 sizes), so
+     don't merge these back into 1 row either.
+  Current total: 24 rows (17 distinct models, 7 of them ×2).
 - **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
   (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
   crontab) pulls from **two** open sources and merges results, brand-scoped token
