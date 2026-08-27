@@ -55,9 +55,18 @@ separate catalog for smartwatch tempered glass (`GET /smartwatch`, own DB file).
   minus the bot-export/launch-date features — those weren't requested for this catalog); the
   "Ukuran" table column renders `⌀{diameter}` or `{panjang} × {lebar}, R{radius}` depending on
   `bentuk`. No launch-date columns here; add them later only if actually asked for.
-  **Not yet populated**: a colleague (Vera) reportedly has smartwatch measurement data that
-  isn't in "mesin hydrogel" (the cutting machine's own records) — source/format not yet
-  gathered from her as of 2026-08-27, that's the next step before this table has real rows.
+  **Populated 2026-08-27** with 24 rows from a Google Sheet Vera maintains (freeform Indonesian
+  notes, not a structured table — parsed by hand into `import_vera_smartwatch.csv`, gitignored
+  like other business data per `*.csv` in `.gitignore`, then imported via `POST
+  /api/smartwatch/import`). Entries with "cetak 2 ukuran" (two acceptable cut sizes for the
+  same watch model) became 2 rows, cross-linked via `alternatif` so staff can fall back to the
+  other cut if one's unavailable. One entry (`INFINIX X Watch H4`) had no numeric measurement in
+  the source — it says "pakai ukuran Apple Watch Ultra" (uses Apple Watch Ultra's size) with no
+  Apple Watch Ultra row to reference in that sheet — recorded as-is in `tipe_smartwatch`
+  (`"X Watch H4 (ukuran = Apple Watch Ultra)"`) with `bentuk`/measurement columns left empty
+  rather than guessing a number; still needs the real figure from Vera. `jenis_tg` defaulted to
+  `"Hydrogel"` for all 24 (matches the source machine), `merek_tg` to `"No Brand"` (in-house cut,
+  not a purchased branded product) — revisit both if that assumption turns out wrong.
 - **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
   (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
   crontab) pulls from **two** open sources and merges results, brand-scoped token
