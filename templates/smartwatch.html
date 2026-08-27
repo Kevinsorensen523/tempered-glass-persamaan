@@ -266,6 +266,18 @@
     }
     .modal-notice strong { display: block; margin-bottom: 2px; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .modal-icon.info { background: var(--light); }
+
+    .form-label {
+      font-size: .75rem; font-weight: 700; color: var(--navy);
+      display: block; margin-bottom: 5px; letter-spacing: .05em;
+    }
+    .form-input {
+      width: 100%; padding: 10px; border: 1.5px solid var(--border);
+      border-radius: 8px; outline: none; font-size: .9rem;
+      font-family: inherit; background: #FAFCFF;
+    }
+    .form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
 
     .toast {
       position: fixed; bottom: 28px; right: 28px;
@@ -329,6 +341,15 @@
     </div>
 
     <div class="actions">
+      <button class="btn btn-primary" onclick="openAddModal()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Tambah Data
+      </button>
+
+      <div class="sep-v"></div>
+
       <button class="btn btn-ghost" onclick="downloadTemplate()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -369,7 +390,6 @@
         <thead>
           <tr>
             <th class="col-no">No.</th>
-            <th class="col-kode">Kode</th>
             <th class="col-tipe">Tipe Smartwatch</th>
             <th class="col-merek">Merek</th>
             <th class="col-bentuk">Bentuk</th>
@@ -377,11 +397,10 @@
             <th class="col-jenis">Jenis TG</th>
             <th class="col-merek-tg">Merek TG</th>
             <th class="col-kode-merek-tg">Kode Merek TG</th>
-            <th class="col-alt">Alternatif</th>
           </tr>
         </thead>
         <tbody id="tableBody">
-          <tr class="empty-row"><td colspan="10"><span class="empty-icon">🔄</span>Memuat data…</td></tr>
+          <tr class="empty-row"><td colspan="8"><span class="empty-icon">🔄</span>Memuat data…</td></tr>
         </tbody>
       </table>
     </div>
@@ -415,6 +434,75 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="cancelImport()">Batal</button>
       <button class="btn btn-primary" onclick="doImport()">Ya, Import Sekarang</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL TAMBAH DATA (input manual, gak lewat CSV) ─────────────────────── -->
+<div class="overlay" id="addOverlay">
+  <div class="modal" style="width:480px;">
+    <div class="modal-icon info">➕</div>
+    <h2>Tambah Data Smartwatch</h2>
+    <p>Kode dibuat otomatis, gak perlu diisi manual.</p>
+
+    <div style="margin: 14px 0;">
+      <label class="form-label">TIPE SMARTWATCH *</label>
+      <input type="text" id="addTipe" placeholder="mis. Galaxy Watch 6" class="form-input">
+    </div>
+    <div style="display:flex; gap:12px; margin: 14px 0;">
+      <div style="flex:1;">
+        <label class="form-label">MEREK *</label>
+        <input type="text" id="addMerek" placeholder="mis. Samsung" class="form-input">
+      </div>
+      <div style="flex:1;">
+        <label class="form-label">BENTUK</label>
+        <select id="addBentuk" class="form-input" onchange="onAddBentukChange()">
+          <option value="">— pilih —</option>
+          <option value="Bulat">Bulat</option>
+          <option value="Persegi">Persegi</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="addBulatFields" style="display:none; margin: 14px 0;">
+      <label class="form-label">DIAMETER</label>
+      <input type="text" id="addDiameter" placeholder="mis. 44mm" class="form-input">
+    </div>
+    <div id="addPersegiFields" style="display:none; margin: 14px 0; gap:10px;">
+      <div style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label class="form-label">PANJANG</label>
+          <input type="text" id="addPanjang" placeholder="mis. 45mm" class="form-input">
+        </div>
+        <div style="flex:1;">
+          <label class="form-label">LEBAR</label>
+          <input type="text" id="addLebar" placeholder="mis. 38mm" class="form-input">
+        </div>
+        <div style="flex:1;">
+          <label class="form-label">RADIUS</label>
+          <input type="text" id="addRadius" placeholder="mis. 6mm" class="form-input">
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:12px; margin: 14px 0;">
+      <div style="flex:1;">
+        <label class="form-label">JENIS TG</label>
+        <input type="text" id="addJenisTg" placeholder="mis. Hydrogel" class="form-input">
+      </div>
+      <div style="flex:1;">
+        <label class="form-label">MEREK TG</label>
+        <input type="text" id="addMerekTg" placeholder="mis. No Brand" class="form-input">
+      </div>
+    </div>
+    <div style="margin: 14px 0;">
+      <label class="form-label">KODE MEREK TG (opsional)</label>
+      <input type="text" id="addKodeMerekTg" placeholder="mis. KA-A02" class="form-input">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeAddModal()">Batal</button>
+      <button class="btn btn-primary" onclick="doAddSmartwatch()">Simpan</button>
     </div>
   </div>
 </div>
@@ -618,8 +706,67 @@
     }
   }
 
+  // ── tambah data manual ─────────────────────────────────────────────────────
+  function openAddModal() {
+    ["addTipe", "addMerek", "addBentuk", "addDiameter", "addPanjang", "addLebar",
+     "addRadius", "addJenisTg", "addKodeMerekTg"].forEach(id => { document.getElementById(id).value = ""; });
+    document.getElementById("addMerekTg").value = "No Brand";
+    onAddBentukChange();
+    document.getElementById("addOverlay").classList.add("open");
+    setTimeout(() => document.getElementById("addTipe").focus(), 100);
+  }
+
+  function closeAddModal() {
+    document.getElementById("addOverlay").classList.remove("open");
+  }
+
+  function onAddBentukChange() {
+    const bentuk = document.getElementById("addBentuk").value;
+    document.getElementById("addBulatFields").style.display = bentuk === "Bulat" ? "block" : "none";
+    document.getElementById("addPersegiFields").style.display = bentuk === "Persegi" ? "block" : "none";
+  }
+
+  async function doAddSmartwatch() {
+    const tipe = document.getElementById("addTipe").value.trim();
+    const merek = document.getElementById("addMerek").value.trim();
+    if (!tipe || !merek) {
+      toast("❌ Tipe Smartwatch dan Merek wajib diisi!", "error");
+      return;
+    }
+    const payload = {
+      tipe_smartwatch: tipe,
+      merek: merek,
+      bentuk: document.getElementById("addBentuk").value,
+      diameter: document.getElementById("addDiameter").value.trim(),
+      panjang: document.getElementById("addPanjang").value.trim(),
+      lebar: document.getElementById("addLebar").value.trim(),
+      radius: document.getElementById("addRadius").value.trim(),
+      jenis_tg: document.getElementById("addJenisTg").value.trim(),
+      merek_tg: document.getElementById("addMerekTg").value.trim(),
+      kode_merek_tg: document.getElementById("addKodeMerekTg").value.trim(),
+    };
+    try {
+      const resp = await fetch("/api/smartwatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await resp.json();
+      if (resp.ok) {
+        closeAddModal();
+        await loadFilterOptions();
+        await loadData(document.getElementById("searchInput").value.trim());
+        toast(`✅ Data tersimpan (${json.kode}).`, "success");
+      } else {
+        toast(`❌ ${json.error || "Gagal menyimpan."}`, "error");
+      }
+    } catch (e) {
+      toast("❌ Terjadi kesalahan jaringan.", "error");
+    }
+  }
+
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") { cancelImport(); }
+    if (e.key === "Escape") { cancelImport(); closeAddModal(); }
   });
 
   let toastTimer;

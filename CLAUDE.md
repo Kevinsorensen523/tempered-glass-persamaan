@@ -55,6 +55,21 @@ separate catalog for smartwatch tempered glass (`GET /smartwatch`, own DB file).
   minus the bot-export/launch-date features — those weren't requested for this catalog); the
   "Ukuran" table column renders `⌀{diameter}` or `{panjang} × {lebar}, R{radius}` depending on
   `bentuk`. No launch-date columns here; add them later only if actually asked for.
+  **UI simplified 2026-08-27** (user feedback: "gk rapi tampilannya... aneh"): `Kode` and
+  `Alternatif` columns hidden from the table (still in the DB/API, just not displayed —
+  low priority for staff reading it day-to-day); the `⌀` diameter symbol and `P/L/R`
+  shorthand replaced with plain Indonesian labels ("Diameter: 44mm", each of
+  Panjang/Lebar/Radius on its own line, not comma-joined, to avoid awkward wrapping in a
+  narrow column); Alternatif tags (where still used, e.g. via the API) resolve to the linked
+  model's name via a client-side `kode -> tipe_smartwatch` index rather than showing a raw
+  code like "SW0002" with no context.
+  **Manual add, no CSV required** (`POST /api/smartwatch`, `"Tambah Data"` button/modal in
+  `templates/smartwatch.html`): staff (e.g. Vera) can add one row directly from the browser —
+  `kode` is auto-generated (`_next_smartwatch_kode()`, next `SW####` after the current max),
+  the Bentuk dropdown shows/hides the Diameter vs Panjang/Lebar/Radius fields. Deliberately
+  **no password gate** on this endpoint (unlike CSV import/export) since it only adds one row
+  and can't destroy existing data — matches the "beda kayak hp yang harus impor" requirement.
+  CSV import/export (password-gated, full-replace) still exists for bulk operations.
   **Populated 2026-08-27** with 24 rows from a Google Sheet Vera maintains (freeform Indonesian
   notes, not a structured table — parsed by hand into `import_vera_smartwatch.csv`, gitignored
   like other business data per `*.csv` in `.gitignore`, then imported via `POST

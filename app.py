@@ -746,6 +746,56 @@ def smartwatch_page():
     return render_template("smartwatch.html")
 
 
+_SMARTWATCH_KODE_RE = re.compile(r"^SW(\d+)$")
+
+
+def _next_smartwatch_kode(db) -> str:
+    """Kode otomatis SW0001, SW0002, ... berdasar angka SW tertinggi yang ada
+    di tabel — dipakai buat input manual (staff, mis. Vera, gak perlu mikirin
+    kode sendiri kayak alur CSV import)."""
+    rows = db.execute("SELECT kode FROM smartwatch WHERE kode LIKE 'SW%'").fetchall()
+    max_num = 0
+    for r in rows:
+        m = _SMARTWATCH_KODE_RE.match(r["kode"])
+        if m:
+            max_num = max(max_num, int(m.group(1)))
+    return f"SW{max_num + 1:04d}"
+
+
+@app.post("/api/smartwatch")
+def add_smartwatch():
+    """Tambah 1 baris data smartwatch secara manual (beda dari alur HP yang
+    wajib lewat CSV import) — dipakai staff (mis. Vera) yang input langsung
+    dari lapangan tanpa perlu nyiapin file CSV dulu. Kode di-generate otomatis."""
+    data = request.get_json(silent=True) or {}
+    tipe = (data.get("tipe_smartwatch") or "").strip()
+    merek = (data.get("merek") or "").strip()
+    bentuk = (data.get("bentuk") or "").strip()
+    diameter = (data.get("diameter") or "").strip()
+    panjang = (data.get("panjang") or "").strip()
+    lebar = (data.get("lebar") or "").strip()
+    radius = (data.get("radius") or "").strip()
+    jenis_tg = (data.get("jenis_tg") or "").strip()
+    merek_tg = (data.get("merek_tg") or "").strip()
+    kode_merek_tg = (data.get("kode_merek_tg") or "").strip()
+
+    if not tipe or not merek:
+        return jsonify({"error": "Tipe Smartwatch dan Merek wajib diisi"}), 400
+    if bentuk not in (SMARTWATCH_BENTUK_BULAT, SMARTWATCH_BENTUK_PERSEGI, ""):
+        return jsonify({"error": "Bentuk harus 'Bulat' atau 'Persegi'"}), 400
+
+    db = get_smartwatch_db()
+    kode = _next_smartwatch_kode(db)
+    db.execute(
+        "INSERT INTO smartwatch (kode, tipe_smartwatch, merek, bentuk, diameter, panjang, "
+        "lebar, radius, jenis_tg, alternatif, merek_tg, kode_merek_tg) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)",
+        (kode, tipe, merek, bentuk, diameter, panjang, lebar, radius, jenis_tg, merek_tg, kode_merek_tg),
+    )
+    db.commit()
+    return jsonify({"added": True, "kode": kode})
+
+
 @app.get("/api/smartwatch")
 def list_smartwatch():
     q = request.args.get("q", "").strip()
