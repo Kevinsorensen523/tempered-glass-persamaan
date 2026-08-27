@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 hp_data.db
+smartwatch_data.db
 backups/
 reports/
 *.csv

@@ -5,7 +5,8 @@
 Single-user internal web app for managing a lookup table of phone models (`hp` =
 "handphone") to their tempered-glass type and equivalent/alternative glass codes.
 Used by store staff to search "what glass fits phone X" and to bulk import/export
-the catalog via CSV. Indonesian-language UI (`lang="id"`).
+the catalog via CSV. Indonesian-language UI (`lang="id"`). Also hosts a second,
+separate catalog for smartwatch tempered glass (`GET /smartwatch`, own DB file).
 
 **Active features:**
 - Search/list HP records (`GET /api/hp?q=`) — matches kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg
@@ -14,13 +15,39 @@ the catalog via CSV. Indonesian-language UI (`lang="id"`).
 - Password-gated CSV import — **full replace**: wipes table and re-inserts all rows,
   auto-backs up existing data to `backups/backup_<timestamp>.csv` first (`POST /api/hp/import`)
 - Single-page frontend (`templates/index.html`, vanilla HTML/CSS/JS, no framework, no build step)
-- **⚠️ Uncommitted (in progress):** new column `kode_merek_tg` (internal TG-brand SKU code,
-  e.g. `"KA-A02"`) being added end-to-end — schema migration in `get_db()`, `_row_to_dict()`,
-  search, template/export/import CSV (7th column `KODE MEREK TG`), and a new table column in
-  `templates/index.html`. Not yet committed as of 2026-08-10 — finish/verify before starting
-  unrelated work, or stash if picking up something else. See `docs/notes-ka-codes.md` for the
-  raw KA-A code list this column is meant to hold (user hadn't given import instructions as of
-  2026-07-30 — check if that's been resolved before assuming the list is unused).
+- `kode_merek_tg` column (internal TG-brand SKU code, e.g. `"KA-A02"`) — wired end-to-end:
+  schema migration in `get_db()`, `_row_to_dict()`, search, template/export/import CSV (7th
+  column `KODE MEREK TG`), and the table column in `templates/index.html`. Committed in
+  `1ff910a` (2026-08-12). Bulk-populated with ~330 rows across KA-codes KA-A02, A06, A07,
+  A08, A09, A11–A16, A19, A21, A22, plus TG Camera B05/B06 (session of 2026-08-10, see
+  `session_summary.md` and `docs/progress.md`), transcribed from supplier receipt photos —
+  the list in `docs/notes-ka-codes.md` has been consumed, not sitting unused.
+- **`tahun_launching`/`bulan_launching` columns** (added 2026-08-27): year/month a phone
+  launched, TEXT, default `''` — rendered as **"Coming Soon"** in the UI (`LAUNCH_UNKNOWN`
+  in `app.py`) whenever empty, i.e. not yet matched to a source. `GET /api/hp` accepts
+  `tahun_launching=` (exact) and `recent_only=1` (launched in the last 1 calendar year,
+  `CAST(tahun_launching AS INTEGER) >= this_year - 1`) — used by the "🆕 1 Tahun Terakhir"
+  filter button in `templates/index.html`. **Populated from Wikidata/Postel, NOT GSMArena** —
+  GSMArena's robots.txt/RSL license forbid AI bots (see "Sources tried and rejected" below and
+  `scripts/find_new_phones.py`'s docstring); the user explicitly chose Wikidata/Postel as the
+  source when asked. `scripts/backfill_launch_dates.py` reuses `fetch_wikidata_phones()` /
+  `fetch_postel_phones()` / `model_tokens()` / `normalize_merek()` from `find_new_phones.py`
+  (do not duplicate that fetch/matching logic) to fill in `hp` rows still stuck at "Coming
+  Soon", triggerable via the "Isi Tahun/Bulan Otomatis" button (`POST /api/hp/backfill-launch`,
+  same background-thread + lock-file pattern as the HP Baru refresh). **Known limitation, not
+  a bug:** only fills phones recent enough / from brands whitelisted in `BRAND_QIDS`/
+  `POSTEL_BRANDS` — older or off-brand phones stay "Coming Soon" indefinitely until a broader
+  source exists.
+- **Smartwatch catalog** (added 2026-08-27): a **separate SQLite DB file** `smartwatch_data.db`
+  (own `get_smartwatch_db()`/`g.swdb` connection, gitignored like `hp_data.db`) for tempered
+  glass sized to smartwatch screens — deliberately not merged into the `hp` table, since
+  smartwatches match by `ukuran` (screen size, e.g. `"44mm"`, `"1.62 inch"`), not by model-name
+  token matching like phones. Table `smartwatch`: `kode, tipe_smartwatch, merek, ukuran,
+  jenis_tg, alternatif, merek_tg, kode_merek_tg` — same `alternatif`/import-export/backup
+  conventions as `hp` (reuses `_parse_alternatif`, `_normalize_kode`, `EXPORT_PASSWORD`/
+  `IMPORT_PASSWORD`). UI at `GET /smartwatch` (`templates/smartwatch.html`, near-identical
+  layout to `index.html` minus the bot-export/launch-date features — those weren't requested
+  for this catalog). No launch-date columns here; add them later only if actually asked for.
 - **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
   (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
   crontab) pulls from **two** open sources and merges results, brand-scoped token
@@ -59,9 +86,10 @@ the catalog via CSV. Indonesian-language UI (`lang="id"`).
 
 - **Backend:** Flask (`app.py`, ~370 lines, all routes in one file), `sqlite3` stdlib driver (no ORM)
 - **DB:** SQLite file `hp_data.db` (gitignored, lives next to `app.py`)
-- **Frontend:** Two Jinja templates — `templates/index.html` (main catalog UI) and
-  `templates/hp_baru.html` (HP Baru report viewer) — inline `<style>` + `<script>`, zero
-  external dependencies (no CDN, no npm)
+- **Frontend:** Three Jinja templates — `templates/index.html` (main HP catalog UI),
+  `templates/hp_baru.html` (HP Baru report viewer), `templates/smartwatch.html` (smartwatch TG
+  catalog UI, `smartwatch_data.db`) — inline `<style>` + `<script>`, zero external dependencies
+  (no CDN, no npm)
 - **Server:** gunicorn in production (`run.sh`), Flask dev server (`debug=True`) when run directly
 - **Deploy:** `deploy.sh` provisions a Debian/Ubuntu venv; `tempered-glass.service` is the systemd unit (runs as `www-data`, working dir `/opt/tempered-glass`, port 8080)
 - No test framework, no linter/formatter config, no CI present in this repo.
@@ -79,7 +107,9 @@ Table `hp` (auto-migrated on first request via `PRAGMA table_info` check in `get
 | jenis_tg     | TEXT    | tempered glass type, default `''`       |
 | alternatif   | TEXT    | JSON array string of alternative kodes, default `'[]'` |
 | merek_tg     | TEXT    | tempered glass brand (e.g. "Spigen", "No Brand"), default `''` — separate from `merek` (phone brand) |
-| kode_merek_tg | TEXT   | internal TG-brand SKU code (e.g. "KA-A02"), default `''` — **uncommitted, in progress**, see Active Features |
+| kode_merek_tg | TEXT   | internal TG-brand SKU code (e.g. "KA-A02"), default `''` |
+| tahun_launching | TEXT | phone launch year, default `''` (shown as "Coming Soon"), see Active Features |
+| bulan_launching | TEXT | phone launch month (Indonesian name, e.g. "Januari"), default `''` (shown as "Coming Soon") |
 
 `alternatif` relationships are meant to be **symmetric**: if kode A lists kode B as
 an alternative, B should list A back. Not enforced by the schema/app — was manually
@@ -88,6 +118,34 @@ normal import flow.
 
 `alternatif` is stored as a JSON string and parsed with `_parse_alternatif()` on import
 (accepts JSON array, or `;`/`,`-separated fallback) and `_row_to_dict()` on read.
+
+`kode` has **no UNIQUE constraint** — a standing gotcha (see "kode-uniqueness" note below).
+
+### Table `smartwatch` (separate DB file `smartwatch_data.db`, own connection `get_smartwatch_db()`)
+
+| column          | type | notes |
+|-----------------|------|-------|
+| id              | INTEGER | PK autoincrement |
+| kode            | TEXT | not enforced unique, same caveat as `hp.kode` |
+| tipe_smartwatch | TEXT | smartwatch model name |
+| merek           | TEXT | brand |
+| ukuran          | TEXT | screen size (e.g. "44mm", "1.62 inch") — the primary match key for this catalog, unlike `hp` which matches by model name |
+| jenis_tg        | TEXT | default `''` |
+| alternatif      | TEXT | JSON array string, default `'[]'`, same helpers as `hp.alternatif` |
+| merek_tg        | TEXT | default `''` |
+| kode_merek_tg   | TEXT | default `''` |
+
+### kode-uniqueness gotcha (standing rule, from the 2026-08-10 KA-code bulk-entry session)
+
+`hp.kode` has no UNIQUE constraint, which caused two real data-integrity incidents during
+bulk entry (see `session_summary.md` for full detail): (1) an accidental overwrite of 54
+unrelated legacy rows (TG0339–TG0392, accepted as permanent loss) from a stale range query,
+and (2) a cross-KA-code kode collision affecting 40 rows because "reuse freed kode block"
+logic only checked one KA-code's own old range instead of the whole table. **Any future kode
+reassignment must**: (a) compute new ranges from `max(kode)` over the **entire** `hp` table,
+never a per-batch subrange, and (b) be followed by a full-table collision check
+(`(kode) -> {kode_merek_tg}` should be 1:1 per intended batch) plus a gap check on the sorted
+distinct kode sequence.
 
 ## Code Style & Conventions
 
@@ -121,19 +179,23 @@ normal import flow.
 - CSV import with mixed delimiters (`csv.Sniffer` fallback logic in `import_csv`)
 - CSV import replacing data when `hp` table is empty (no backup should be created — verify `backup_created` stays `False`)
 - Search (`/api/hp?q=`) across all seven LIKE-matched columns, including partial JSON matches inside `alternatif`
-- DB migration path: opening an old `hp_data.db` created before `jenis_tg`/`alternatif`/`merek_tg`/`kode_merek_tg` columns existed
-- Wrong password on export/import (expect 401, no data leak in error body)
+- DB migration path: opening an old `hp_data.db` created before `jenis_tg`/`alternatif`/`merek_tg`/`kode_merek_tg`/`tahun_launching`/`bulan_launching` columns existed
+- Wrong password on export/import (expect 401, no data leak in error body) — manually smoke-tested for both `hp` and `smartwatch` endpoints 2026-08-27, both correctly 401
 - Concurrent import while another request is reading (SQLite locking behavior under gunicorn's 2 workers)
-- `kode_merek_tg` CSV round-trip (template → edit → import → export) now that it's a 7th column — untested since the column is brand new/uncommitted
+- `kode_merek_tg`/`tahun_launching`/`bulan_launching` CSV round-trip (template → edit → import → export) — manually smoke-tested via Flask test client 2026-08-27 (import/export/filters/recent_only all verified), still no automated pytest suite
+- `recent_only=1` filter behavior across a year boundary (right now Jan 1 flips the cutoff instantly — untested whether that's the desired semantics or should be a rolling 365 days)
+- `scripts/backfill_launch_dates.py` against the real ~3200-row `hp_data.db` — only smoke-tested against synthetic rows so far, not run against production data
 
 ## Next TODOs
 
-1. Finish and commit the in-progress `kode_merek_tg` column work (see Active Features) — currently
-   uncommitted local changes to `app.py` and `templates/index.html`.
-2. Move `EXPORT_PASSWORD`/`IMPORT_PASSWORD` to env vars (`.env`, gitignored — already in `.gitignore`)
-3. Add a pytest suite covering the scenarios above (no test infra currently set up: would need `pytest`,
-   probably a temp-DB fixture overriding `DB_PATH`)
-4. Consider splitting `app.py` if more routes/entities are added (currently under the 800-line guideline, no action needed yet)
+1. Run `scripts/backfill_launch_dates.py` (or the "Isi Tahun/Bulan Otomatis" button) against the
+   real `hp_data.db` and spot-check the match quality before relying on it.
+2. Populate `smartwatch_data.db` with real data — currently just the schema/UI/API, table is empty.
+3. Move `EXPORT_PASSWORD`/`IMPORT_PASSWORD` to env vars (`.env`, gitignored — already in `.gitignore`)
+4. Add a pytest suite covering the scenarios above (no test infra currently set up: would need `pytest`,
+   probably a temp-DB fixture overriding `DB_PATH`/`SMARTWATCH_DB_PATH`)
+5. Consider splitting `app.py` if more routes/entities are added — now ~370 → ~600+ lines after the
+   launch-date + smartwatch additions, still under the 800-line guideline but worth watching.
 
 Sources tried and rejected for the HP Baru finder (see `scripts/find_new_phones.py` for what's
 actually used): GSMArena (robots.txt explicitly disallows ClaudeBot/anthropic-ai + RSL license

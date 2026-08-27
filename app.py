@@ -14,6 +14,7 @@ from flask import Flask, g, jsonify, render_template, request, send_file
 
 app = Flask(__name__)
 DB_PATH = "hp_data.db"
+SMARTWATCH_DB_PATH = "smartwatch_data.db"
 BACKUP_DIR = "backups"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -21,9 +22,24 @@ NEW_PHONE_REPORT = os.path.join(REPORTS_DIR, "new_phone_candidates.json")
 NEW_PHONE_SEEN = os.path.join(REPORTS_DIR, "new_phone_seen.json")
 NEW_PHONE_REFRESH_LOCK = os.path.join(REPORTS_DIR, "refresh.lock")
 NEW_PHONE_SCRIPT = os.path.join(BASE_DIR, "scripts", "find_new_phones.py")
+LAUNCH_BACKFILL_LOCK = os.path.join(REPORTS_DIR, "backfill_launch.lock")
+LAUNCH_BACKFILL_SCRIPT = os.path.join(BASE_DIR, "scripts", "backfill_launch_dates.py")
+
+# Placeholder pengganti tahun/bulan launching kalau belum ketemu datanya
+# (belum berhasil dicocokkan ke Wikidata/Postel) — lihat CLAUDE.md.
+LAUNCH_UNKNOWN = "Coming Soon"
 
 
 # ── database ──────────────────────────────────────────────────────────────────
+
+def _ensure_columns(conn, table: str, coldefs: dict[str, str]) -> None:
+    """Tambah kolom yang belum ada ke `table` (migrasi in-place utk DB lama)."""
+    existing_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl in coldefs.items():
+        if name not in existing_cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    conn.commit()
+
 
 def get_db():
     if "db" not in g:
@@ -41,18 +57,45 @@ def get_db():
                 kode_merek_tg TEXT NOT NULL DEFAULT ''
             )
         """)
-        # migrate: add new columns if missing (for existing DBs)
-        existing_cols = {r[1] for r in g.db.execute("PRAGMA table_info(hp)").fetchall()}
-        if "jenis_tg" not in existing_cols:
-            g.db.execute("ALTER TABLE hp ADD COLUMN jenis_tg TEXT NOT NULL DEFAULT ''")
-        if "alternatif" not in existing_cols:
-            g.db.execute("ALTER TABLE hp ADD COLUMN alternatif TEXT NOT NULL DEFAULT '[]'")
-        if "merek_tg" not in existing_cols:
-            g.db.execute("ALTER TABLE hp ADD COLUMN merek_tg TEXT NOT NULL DEFAULT ''")
-        if "kode_merek_tg" not in existing_cols:
-            g.db.execute("ALTER TABLE hp ADD COLUMN kode_merek_tg TEXT NOT NULL DEFAULT ''")
-        g.db.commit()
+        _ensure_columns(g.db, "hp", {
+            "jenis_tg":         "TEXT NOT NULL DEFAULT ''",
+            "alternatif":       "TEXT NOT NULL DEFAULT '[]'",
+            "merek_tg":         "TEXT NOT NULL DEFAULT ''",
+            "kode_merek_tg":    "TEXT NOT NULL DEFAULT ''",
+            "tahun_launching":  "TEXT NOT NULL DEFAULT ''",
+            "bulan_launching":  "TEXT NOT NULL DEFAULT ''",
+        })
     return g.db
+
+
+def get_smartwatch_db():
+    """DB terpisah dari `hp` (file sendiri, `smartwatch_data.db`) khusus data
+    ukuran smartwatch -> tempered glass yang cocok. Dipisah dari hp_data.db
+    biar gak campur aduk skema (smartwatch pakai `ukuran`, bukan `tipe_hp`)."""
+    if "swdb" not in g:
+        g.swdb = sqlite3.connect(SMARTWATCH_DB_PATH)
+        g.swdb.row_factory = sqlite3.Row
+        g.swdb.execute("""
+            CREATE TABLE IF NOT EXISTS smartwatch (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                kode             TEXT NOT NULL,
+                tipe_smartwatch  TEXT NOT NULL,
+                merek            TEXT NOT NULL,
+                ukuran           TEXT NOT NULL DEFAULT '',
+                jenis_tg         TEXT NOT NULL DEFAULT '',
+                alternatif       TEXT NOT NULL DEFAULT '[]',
+                merek_tg         TEXT NOT NULL DEFAULT '',
+                kode_merek_tg    TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        _ensure_columns(g.swdb, "smartwatch", {
+            "ukuran":        "TEXT NOT NULL DEFAULT ''",
+            "jenis_tg":      "TEXT NOT NULL DEFAULT ''",
+            "alternatif":    "TEXT NOT NULL DEFAULT '[]'",
+            "merek_tg":      "TEXT NOT NULL DEFAULT ''",
+            "kode_merek_tg": "TEXT NOT NULL DEFAULT ''",
+        })
+    return g.swdb
 
 
 @app.teardown_appcontext
@@ -60,6 +103,9 @@ def close_db(_):
     db = g.pop("db", None)
     if db:
         db.close()
+    swdb = g.pop("swdb", None)
+    if swdb:
+        swdb.close()
 
 
 def _row_to_dict(r):
@@ -78,6 +124,28 @@ def _row_to_dict(r):
         "alternatif": alt,
         "merek_tg":  r["merek_tg"],
         "kode_merek_tg": r["kode_merek_tg"],
+        "tahun_launching": r["tahun_launching"] or LAUNCH_UNKNOWN,
+        "bulan_launching": r["bulan_launching"] or LAUNCH_UNKNOWN,
+    }
+
+
+def _smartwatch_row_to_dict(r):
+    try:
+        alt = json.loads(r["alternatif"]) if r["alternatif"] else []
+        if not isinstance(alt, list):
+            alt = []
+    except Exception:
+        alt = []
+    return {
+        "id":              r["id"],
+        "kode":            r["kode"],
+        "tipe_smartwatch": r["tipe_smartwatch"],
+        "merek":           r["merek"],
+        "ukuran":          r["ukuran"],
+        "jenis_tg":        r["jenis_tg"],
+        "alternatif":      alt,
+        "merek_tg":        r["merek_tg"],
+        "kode_merek_tg":   r["kode_merek_tg"],
     }
 
 
@@ -208,6 +276,8 @@ def list_hp():
     merek = request.args.get("merek", "").strip()
     jenis_tg = request.args.get("jenis_tg", "").strip()
     merek_tg = request.args.get("merek_tg", "").strip()
+    tahun_launching = request.args.get("tahun_launching", "").strip()
+    recent_only = request.args.get("recent_only", "").strip() == "1"
 
     where = []
     params: list[str] = []
@@ -227,8 +297,18 @@ def list_hp():
     if merek_tg:
         where.append("merek_tg = ?")
         params.append(merek_tg)
+    if tahun_launching:
+        where.append("tahun_launching = ?")
+        params.append(tahun_launching)
+    if recent_only:
+        # HP dgn tahun_launching terisi & >= setahun terakhir. CAST atas string
+        # non-numerik (mis. kosong) balikin 0 di SQLite, jadi otomatis kefilter
+        # keluar tanpa perlu cek "Coming Soon" secara eksplisit.
+        where.append("CAST(tahun_launching AS INTEGER) >= ?")
+        params.append(datetime.now().year - 1)
 
-    sql = "SELECT id, kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg FROM hp"
+    sql = ("SELECT id, kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg, "
+           "tahun_launching, bulan_launching FROM hp")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY kode"
@@ -241,7 +321,7 @@ def list_hp():
 
 @app.get("/api/hp/filters")
 def hp_filter_options():
-    """Nilai unik untuk isi dropdown filter (merek, jenis TG, merek TG)."""
+    """Nilai unik untuk isi dropdown filter (merek, jenis TG, merek TG, tahun launching)."""
     db = get_db()
 
     def distinct(col: str) -> list[str]:
@@ -255,7 +335,47 @@ def hp_filter_options():
         "jenis_tg": distinct("jenis_tg"),
         "merek_tg": distinct("merek_tg"),
         "kode_merek_tg": distinct("kode_merek_tg"),
+        "tahun_launching": sorted(
+            (t for t in distinct("tahun_launching") if t.isdigit()), reverse=True
+        ),
     })
+
+
+@app.post("/api/hp/backfill-launch")
+def backfill_launch_dates():
+    """Trigger scripts/backfill_launch_dates.py di background: cocokkan HP yg
+    tahun_launching-nya masih kosong ('Coming Soon') ke data Wikidata/Postel
+    (sumber yg sama & legal dgn HP Baru finder — GSMArena TIDAK dipakai, lihat
+    CLAUDE.md), isi tahun/bulan-nya kalau ketemu. Pola lock file sama persis
+    kayak /api/hp-baru/refresh biar gak dobel jalan dari worker gunicorn beda."""
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    try:
+        fd = os.open(LAUNCH_BACKFILL_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        return jsonify({"error": "Proses isi tahun/bulan masih berjalan, tunggu sebentar."}), 409
+    threading.Thread(target=_run_launch_backfill, daemon=True).start()
+    return jsonify({"started": True})
+
+
+def _run_launch_backfill():
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    try:
+        with open(os.path.join(REPORTS_DIR, "cron.log"), "a") as log:
+            subprocess.run(
+                [sys.executable, LAUNCH_BACKFILL_SCRIPT],
+                cwd=BASE_DIR, stdout=log, stderr=subprocess.STDOUT, timeout=120,
+            )
+    finally:
+        try:
+            os.remove(LAUNCH_BACKFILL_LOCK)
+        except FileNotFoundError:
+            pass
+
+
+@app.get("/api/hp/backfill-launch-status")
+def backfill_launch_status():
+    return jsonify({"running": os.path.exists(LAUNCH_BACKFILL_LOCK)})
 
 
 # ── export JSON untuk bot upload ────────────────────────────────────────────
@@ -445,15 +565,17 @@ def download_template():
     """Unduh template CSV kosong dengan contoh pengisian."""
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
+    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG",
+                "TAHUN LAUNCHING", "BULAN LAUNCHING"])
     # contoh baris — KODE tanpa strip, ALTERNATIF diisi kode dipisah titik-koma (;)
     # MEREK TG diisi "No Brand" kalau tempered glass generik/gak bermerek
     # KODE MEREK TG diisi kode SKU internal merek TG-nya (mis. "KA-A02"), kosongin kalau gak ada
+    # TAHUN/BULAN LAUNCHING kosongin kalau belum tau -> ditampilkan "Coming Soon" di UI
     w.writerow(["HP001", "Galaxy S24 Ultra", "Samsung", "Privacy",
-                "HP001A;HP001B", "No Brand", ""])
-    w.writerow(["HP002", "iPhone 15 Pro Max", "Apple", "Anti Gores", "HP002X", "Spigen", ""])
-    w.writerow(["HP003", "Redmi Note 13 Pro", "Xiaomi", "Anti Blue Light", "", "No Brand", ""])
-    w.writerow(["HP004", "Pixel 8 Pro", "Google", "Full Cover", "", "No Brand", ""])
+                "HP001A;HP001B", "No Brand", "", "2024", "Januari"])
+    w.writerow(["HP002", "iPhone 15 Pro Max", "Apple", "Anti Gores", "HP002X", "Spigen", "", "2023", "September"])
+    w.writerow(["HP003", "Redmi Note 13 Pro", "Xiaomi", "Anti Blue Light", "", "No Brand", "", "", ""])
+    w.writerow(["HP004", "Pixel 8 Pro", "Google", "Full Cover", "", "No Brand", "", "", ""])
     buf.seek(0)
     return send_file(
         io.BytesIO(buf.getvalue().encode("utf-8-sig")),
@@ -471,15 +593,17 @@ def export_csv():
         return "Unauthorized: Password salah", 401
     db = get_db()
     rows = db.execute(
-        "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg FROM hp ORDER BY kode"
+        "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg, "
+        "tahun_launching, bulan_launching FROM hp ORDER BY kode"
     ).fetchall()
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
+    w.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG",
+                "TAHUN LAUNCHING", "BULAN LAUNCHING"])
     for r in rows:
         alt_codes = _parse_alternatif(r["alternatif"])
         w.writerow([r["kode"], r["tipe_hp"], r["merek"], r["jenis_tg"], ";".join(alt_codes),
-                    r["merek_tg"], r["kode_merek_tg"]])
+                    r["merek_tg"], r["kode_merek_tg"], r["tahun_launching"], r["bulan_launching"]])
     buf.seek(0)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return send_file(
@@ -540,9 +664,14 @@ def import_csv():
                             if "MEREK TG" in idx and idx["MEREK TG"] < len(row) else "")
                 kode_merek_tg = (row[idx["KODE MEREK TG"]].strip()
                                  if "KODE MEREK TG" in idx and idx["KODE MEREK TG"] < len(row) else "")
+                tahun_launching = (row[idx["TAHUN LAUNCHING"]].strip()
+                                   if "TAHUN LAUNCHING" in idx and idx["TAHUN LAUNCHING"] < len(row) else "")
+                bulan_launching = (row[idx["BULAN LAUNCHING"]].strip()
+                                   if "BULAN LAUNCHING" in idx and idx["BULAN LAUNCHING"] < len(row) else "")
                 if kode and tipe and merek:
                     rows_to_insert.append(
-                        (kode, tipe, merek, jenis, json.dumps(alt, ensure_ascii=False), merek_tg, kode_merek_tg)
+                        (kode, tipe, merek, jenis, json.dumps(alt, ensure_ascii=False), merek_tg,
+                         kode_merek_tg, tahun_launching, bulan_launching)
                     )
             except IndexError:
                 continue
@@ -555,7 +684,8 @@ def import_csv():
         # backup data lama ke disk
         backup_created = False
         existing = db.execute(
-            "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg FROM hp ORDER BY kode"
+            "SELECT kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg, "
+            "tahun_launching, bulan_launching FROM hp ORDER BY kode"
         ).fetchall()
         if existing:
             os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -563,17 +693,230 @@ def import_csv():
             backup_path = os.path.join(BACKUP_DIR, f"backup_{ts}.csv")
             with open(backup_path, "w", newline="", encoding="utf-8-sig") as bf:
                 bw = csv.writer(bf)
-                bw.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
+                bw.writerow(["KODE", "TIPE HP", "MEREK", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG",
+                             "TAHUN LAUNCHING", "BULAN LAUNCHING"])
                 for r in existing:
                     bw.writerow([r["kode"], r["tipe_hp"], r["merek"], r["jenis_tg"], r["alternatif"],
-                                 r["merek_tg"], r["kode_merek_tg"]])
+                                 r["merek_tg"], r["kode_merek_tg"], r["tahun_launching"], r["bulan_launching"]])
             backup_created = True
 
         # hapus semua, lalu insert baru
         db.execute("DELETE FROM hp")
         db.executemany(
-            "INSERT INTO hp (kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO hp (kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, kode_merek_tg, "
+            "tahun_launching, bulan_launching) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows_to_insert,
+        )
+        db.commit()
+
+        return jsonify({"imported": len(rows_to_insert), "backup": backup_created})
+
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── smartwatch (database terpisah, ukuran tempered glass smartwatch) ───────────
+
+@app.get("/smartwatch")
+def smartwatch_page():
+    return render_template("smartwatch.html")
+
+
+@app.get("/api/smartwatch")
+def list_smartwatch():
+    q = request.args.get("q", "").strip()
+    merek = request.args.get("merek", "").strip()
+    jenis_tg = request.args.get("jenis_tg", "").strip()
+    merek_tg = request.args.get("merek_tg", "").strip()
+    ukuran = request.args.get("ukuran", "").strip()
+
+    where = []
+    params: list[str] = []
+    if q:
+        like = f"%{q}%"
+        where.append(
+            "(kode LIKE ? OR tipe_smartwatch LIKE ? OR merek LIKE ? OR ukuran LIKE ? "
+            "OR jenis_tg LIKE ? OR alternatif LIKE ? OR merek_tg LIKE ? OR kode_merek_tg LIKE ?)"
+        )
+        params += [like] * 8
+    if merek:
+        where.append("merek = ?")
+        params.append(merek)
+    if jenis_tg:
+        where.append("jenis_tg = ?")
+        params.append(jenis_tg)
+    if merek_tg:
+        where.append("merek_tg = ?")
+        params.append(merek_tg)
+    if ukuran:
+        where.append("ukuran = ?")
+        params.append(ukuran)
+
+    sql = ("SELECT id, kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, merek_tg, "
+           "kode_merek_tg FROM smartwatch")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY kode"
+
+    db = get_smartwatch_db()
+    rows = db.execute(sql, params).fetchall()
+    total = db.execute("SELECT COUNT(*) FROM smartwatch").fetchone()[0]
+    return jsonify({"data": [_smartwatch_row_to_dict(r) for r in rows], "total": total})
+
+
+@app.get("/api/smartwatch/filters")
+def smartwatch_filter_options():
+    db = get_smartwatch_db()
+
+    def distinct(col: str) -> list[str]:
+        rows = db.execute(
+            f"SELECT DISTINCT {col} FROM smartwatch WHERE TRIM({col}) != '' ORDER BY {col} COLLATE NOCASE"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    return jsonify({
+        "merek": distinct("merek"),
+        "ukuran": distinct("ukuran"),
+        "jenis_tg": distinct("jenis_tg"),
+        "merek_tg": distinct("merek_tg"),
+        "kode_merek_tg": distinct("kode_merek_tg"),
+    })
+
+
+@app.get("/api/smartwatch/template")
+def download_smartwatch_template():
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "UKURAN", "JENIS TG", "ALTERNATIF",
+                "MEREK TG", "KODE MEREK TG"])
+    # UKURAN diisi ukuran layar smartwatch (mis. "44mm", "1.43 inch") — dipakai
+    # buat nyocokin ukuran TG, bukan match nama model kayak tipe_hp
+    w.writerow(["SW001", "Galaxy Watch 6", "Samsung", "44mm", "Clear", "SW001A", "No Brand", ""])
+    w.writerow(["SW002", "Apple Watch Series 9", "Apple", "45mm", "Privacy", "", "No Brand", ""])
+    w.writerow(["SW003", "Mi Band 8", "Xiaomi", "1.62 inch", "Anti Gores", "", "No Brand", ""])
+    buf.seek(0)
+    return send_file(
+        io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="template_import_tg_smartwatch.csv",
+    )
+
+
+@app.get("/api/smartwatch/export")
+def export_smartwatch_csv():
+    pwd = request.args.get("pwd")
+    if pwd != EXPORT_PASSWORD:
+        return "Unauthorized: Password salah", 401
+    db = get_smartwatch_db()
+    rows = db.execute(
+        "SELECT kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, merek_tg, kode_merek_tg "
+        "FROM smartwatch ORDER BY kode"
+    ).fetchall()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "UKURAN", "JENIS TG", "ALTERNATIF",
+                "MEREK TG", "KODE MEREK TG"])
+    for r in rows:
+        alt_codes = _parse_alternatif(r["alternatif"])
+        w.writerow([r["kode"], r["tipe_smartwatch"], r["merek"], r["ukuran"], r["jenis_tg"],
+                    ";".join(alt_codes), r["merek_tg"], r["kode_merek_tg"]])
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"data_tg_smartwatch_{ts}.csv",
+    )
+
+
+@app.post("/api/smartwatch/import")
+def import_smartwatch_csv():
+    pwd = request.form.get("pwd")
+    if pwd != IMPORT_PASSWORD:
+        return jsonify({"error": "Password salah! Akses ditolak."}), 401
+
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "File tidak ditemukan"}), 400
+
+    try:
+        content = file.stream.read().decode("utf-8-sig")
+        stream = io.StringIO(content)
+
+        try:
+            dialect = csv.Sniffer().sniff(content[:2048])
+            reader = csv.reader(stream, dialect)
+        except csv.Error:
+            stream.seek(0)
+            reader = csv.reader(stream, delimiter=';' if ';' in content else ',')
+
+        headers = [h.strip().upper() for h in next(reader)]
+
+        required = {"KODE", "TIPE SMARTWATCH", "MEREK"}
+        if not required.issubset(set(headers)):
+            return jsonify({
+                "error": f"Kolom wajib: KODE, TIPE SMARTWATCH, MEREK. Ditemukan: {', '.join(headers)}"
+            }), 400
+
+        idx = {h: headers.index(h) for h in headers}
+
+        rows_to_insert = []
+        for row in reader:
+            if not any(c.strip() for c in row):
+                continue
+            try:
+                kode  = _normalize_kode(row[idx["KODE"]])
+                tipe  = row[idx["TIPE SMARTWATCH"]].strip()
+                merek = row[idx["MEREK"]].strip()
+                ukuran = (row[idx["UKURAN"]].strip()
+                          if "UKURAN" in idx and idx["UKURAN"] < len(row) else "")
+                jenis = (row[idx["JENIS TG"]].strip()
+                         if "JENIS TG" in idx and idx["JENIS TG"] < len(row) else "")
+                alt_raw = (row[idx["ALTERNATIF"]].strip()
+                           if "ALTERNATIF" in idx and idx["ALTERNATIF"] < len(row) else "")
+                alt = _parse_alternatif(alt_raw)
+                merek_tg = (row[idx["MEREK TG"]].strip()
+                            if "MEREK TG" in idx and idx["MEREK TG"] < len(row) else "")
+                kode_merek_tg = (row[idx["KODE MEREK TG"]].strip()
+                                 if "KODE MEREK TG" in idx and idx["KODE MEREK TG"] < len(row) else "")
+                if kode and tipe and merek:
+                    rows_to_insert.append(
+                        (kode, tipe, merek, ukuran, jenis, json.dumps(alt, ensure_ascii=False),
+                         merek_tg, kode_merek_tg)
+                    )
+            except IndexError:
+                continue
+
+        if not rows_to_insert:
+            return jsonify({"error": "Tidak ada baris data valid di file CSV"}), 400
+
+        db = get_smartwatch_db()
+
+        # backup data lama ke disk (pola sama kayak import HP)
+        backup_created = False
+        existing = db.execute(
+            "SELECT kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, merek_tg, kode_merek_tg "
+            "FROM smartwatch ORDER BY kode"
+        ).fetchall()
+        if existing:
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(BACKUP_DIR, f"backup_smartwatch_{ts}.csv")
+            with open(backup_path, "w", newline="", encoding="utf-8-sig") as bf:
+                bw = csv.writer(bf)
+                bw.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "UKURAN", "JENIS TG", "ALTERNATIF",
+                             "MEREK TG", "KODE MEREK TG"])
+                for r in existing:
+                    bw.writerow([r["kode"], r["tipe_smartwatch"], r["merek"], r["ukuran"], r["jenis_tg"],
+                                 r["alternatif"], r["merek_tg"], r["kode_merek_tg"]])
+            backup_created = True
+
+        db.execute("DELETE FROM smartwatch")
+        db.executemany(
+            "INSERT INTO smartwatch (kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, "
+            "merek_tg, kode_merek_tg) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows_to_insert,
         )
         db.commit()
