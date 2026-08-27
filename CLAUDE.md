@@ -41,13 +41,23 @@ separate catalog for smartwatch tempered glass (`GET /smartwatch`, own DB file).
 - **Smartwatch catalog** (added 2026-08-27): a **separate SQLite DB file** `smartwatch_data.db`
   (own `get_smartwatch_db()`/`g.swdb` connection, gitignored like `hp_data.db`) for tempered
   glass sized to smartwatch screens — deliberately not merged into the `hp` table, since
-  smartwatches match by `ukuran` (screen size, e.g. `"44mm"`, `"1.62 inch"`), not by model-name
-  token matching like phones. Table `smartwatch`: `kode, tipe_smartwatch, merek, ukuran,
-  jenis_tg, alternatif, merek_tg, kode_merek_tg` — same `alternatif`/import-export/backup
-  conventions as `hp` (reuses `_parse_alternatif`, `_normalize_kode`, `EXPORT_PASSWORD`/
-  `IMPORT_PASSWORD`). UI at `GET /smartwatch` (`templates/smartwatch.html`, near-identical
-  layout to `index.html` minus the bot-export/launch-date features — those weren't requested
-  for this catalog). No launch-date columns here; add them later only if actually asked for.
+  smartwatches match by physical shape/size, not by model-name token matching like phones.
+  **Sizing is shape-aware, mirrors how the hydrogel cutting machine actually measures**
+  (per staff explanation, 2026-08-27): `bentuk` is `"Bulat"` (round) or `"Persegi"`
+  (square/rectangular) — Bulat only needs `diameter`; Persegi needs `panjang` (P/length),
+  `lebar` (L/width), and `radius` (R = corner curvature). A single freeform `ukuran` field
+  was tried first and replaced with these before any real data existed (empty table both times,
+  no migration pain) once the actual measurement convention was explained. Table `smartwatch`:
+  `kode, tipe_smartwatch, merek, bentuk, diameter, panjang, lebar, radius, jenis_tg,
+  alternatif, merek_tg, kode_merek_tg` — same `alternatif`/import-export/backup conventions as
+  `hp` (reuses `_parse_alternatif`, `_normalize_kode`, `EXPORT_PASSWORD`/`IMPORT_PASSWORD`).
+  UI at `GET /smartwatch` (`templates/smartwatch.html`, near-identical layout to `index.html`
+  minus the bot-export/launch-date features — those weren't requested for this catalog); the
+  "Ukuran" table column renders `⌀{diameter}` or `{panjang} × {lebar}, R{radius}` depending on
+  `bentuk`. No launch-date columns here; add them later only if actually asked for.
+  **Not yet populated**: a colleague (Vera) reportedly has smartwatch measurement data that
+  isn't in "mesin hydrogel" (the cutting machine's own records) — source/format not yet
+  gathered from her as of 2026-08-27, that's the next step before this table has real rows.
 - **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
   (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
   crontab) pulls from **two** open sources and merges results, brand-scoped token
@@ -129,7 +139,11 @@ normal import flow.
 | kode            | TEXT | not enforced unique, same caveat as `hp.kode` |
 | tipe_smartwatch | TEXT | smartwatch model name |
 | merek           | TEXT | brand |
-| ukuran          | TEXT | screen size (e.g. "44mm", "1.62 inch") — the primary match key for this catalog, unlike `hp` which matches by model name |
+| bentuk          | TEXT | `"Bulat"` or `"Persegi"` — determines which of the 4 measurement fields below apply |
+| diameter        | TEXT | used when `bentuk = "Bulat"` (e.g. "44mm") |
+| panjang         | TEXT | P/length, used when `bentuk = "Persegi"` |
+| lebar           | TEXT | L/width, used when `bentuk = "Persegi"` |
+| radius          | TEXT | R/corner curvature, used when `bentuk = "Persegi"` |
 | jenis_tg        | TEXT | default `''` |
 | alternatif      | TEXT | JSON array string, default `'[]'`, same helpers as `hp.alternatif` |
 | merek_tg        | TEXT | default `''` |

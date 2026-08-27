@@ -68,10 +68,19 @@ def get_db():
     return g.db
 
 
+# Ukuran smartwatch dicatat sesuai cara mesin hydrogel motong-nya (bukan teks
+# bebas): kalau `bentuk` == "Bulat" cuma butuh `diameter`; kalau "Persegi"
+# butuh `panjang` (P), `lebar` (L), `radius` (R = kelengkungan sudut). Sumber
+# data ini staff (Vera) yang belum masuk ke sistem — lihat CLAUDE.md.
+SMARTWATCH_BENTUK_BULAT = "Bulat"
+SMARTWATCH_BENTUK_PERSEGI = "Persegi"
+
+
 def get_smartwatch_db():
     """DB terpisah dari `hp` (file sendiri, `smartwatch_data.db`) khusus data
     ukuran smartwatch -> tempered glass yang cocok. Dipisah dari hp_data.db
-    biar gak campur aduk skema (smartwatch pakai `ukuran`, bukan `tipe_hp`)."""
+    biar gak campur aduk skema (smartwatch pakai ukuran fisik/bentuk, bukan
+    `tipe_hp`)."""
     if "swdb" not in g:
         g.swdb = sqlite3.connect(SMARTWATCH_DB_PATH)
         g.swdb.row_factory = sqlite3.Row
@@ -81,7 +90,11 @@ def get_smartwatch_db():
                 kode             TEXT NOT NULL,
                 tipe_smartwatch  TEXT NOT NULL,
                 merek            TEXT NOT NULL,
-                ukuran           TEXT NOT NULL DEFAULT '',
+                bentuk           TEXT NOT NULL DEFAULT '',
+                diameter         TEXT NOT NULL DEFAULT '',
+                panjang          TEXT NOT NULL DEFAULT '',
+                lebar            TEXT NOT NULL DEFAULT '',
+                radius           TEXT NOT NULL DEFAULT '',
                 jenis_tg         TEXT NOT NULL DEFAULT '',
                 alternatif       TEXT NOT NULL DEFAULT '[]',
                 merek_tg         TEXT NOT NULL DEFAULT '',
@@ -89,12 +102,19 @@ def get_smartwatch_db():
             )
         """)
         _ensure_columns(g.swdb, "smartwatch", {
-            "ukuran":        "TEXT NOT NULL DEFAULT ''",
+            "bentuk":        "TEXT NOT NULL DEFAULT ''",
+            "diameter":      "TEXT NOT NULL DEFAULT ''",
+            "panjang":       "TEXT NOT NULL DEFAULT ''",
+            "lebar":         "TEXT NOT NULL DEFAULT ''",
+            "radius":        "TEXT NOT NULL DEFAULT ''",
             "jenis_tg":      "TEXT NOT NULL DEFAULT ''",
             "alternatif":    "TEXT NOT NULL DEFAULT '[]'",
             "merek_tg":      "TEXT NOT NULL DEFAULT ''",
             "kode_merek_tg": "TEXT NOT NULL DEFAULT ''",
         })
+        # kolom `ukuran` lama (teks bebas) dibiarkan ada kalau sempat dibuat
+        # DB-nya duluan (jangan DROP COLUMN, gak ada gunanya ambil resiko utk
+        # kolom yang udah gak dipakai kode) — cukup gak dipakai lagi.
     return g.swdb
 
 
@@ -141,7 +161,11 @@ def _smartwatch_row_to_dict(r):
         "kode":            r["kode"],
         "tipe_smartwatch": r["tipe_smartwatch"],
         "merek":           r["merek"],
-        "ukuran":          r["ukuran"],
+        "bentuk":          r["bentuk"],
+        "diameter":        r["diameter"],
+        "panjang":         r["panjang"],
+        "lebar":           r["lebar"],
+        "radius":          r["radius"],
         "jenis_tg":        r["jenis_tg"],
         "alternatif":      alt,
         "merek_tg":        r["merek_tg"],
@@ -728,17 +752,18 @@ def list_smartwatch():
     merek = request.args.get("merek", "").strip()
     jenis_tg = request.args.get("jenis_tg", "").strip()
     merek_tg = request.args.get("merek_tg", "").strip()
-    ukuran = request.args.get("ukuran", "").strip()
+    bentuk = request.args.get("bentuk", "").strip()
 
     where = []
     params: list[str] = []
     if q:
         like = f"%{q}%"
         where.append(
-            "(kode LIKE ? OR tipe_smartwatch LIKE ? OR merek LIKE ? OR ukuran LIKE ? "
+            "(kode LIKE ? OR tipe_smartwatch LIKE ? OR merek LIKE ? OR bentuk LIKE ? "
+            "OR diameter LIKE ? OR panjang LIKE ? OR lebar LIKE ? OR radius LIKE ? "
             "OR jenis_tg LIKE ? OR alternatif LIKE ? OR merek_tg LIKE ? OR kode_merek_tg LIKE ?)"
         )
-        params += [like] * 8
+        params += [like] * 12
     if merek:
         where.append("merek = ?")
         params.append(merek)
@@ -748,12 +773,12 @@ def list_smartwatch():
     if merek_tg:
         where.append("merek_tg = ?")
         params.append(merek_tg)
-    if ukuran:
-        where.append("ukuran = ?")
-        params.append(ukuran)
+    if bentuk:
+        where.append("bentuk = ?")
+        params.append(bentuk)
 
-    sql = ("SELECT id, kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, merek_tg, "
-           "kode_merek_tg FROM smartwatch")
+    sql = ("SELECT id, kode, tipe_smartwatch, merek, bentuk, diameter, panjang, lebar, radius, "
+           "jenis_tg, alternatif, merek_tg, kode_merek_tg FROM smartwatch")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY kode"
@@ -776,7 +801,7 @@ def smartwatch_filter_options():
 
     return jsonify({
         "merek": distinct("merek"),
-        "ukuran": distinct("ukuran"),
+        "bentuk": distinct("bentuk"),
         "jenis_tg": distinct("jenis_tg"),
         "merek_tg": distinct("merek_tg"),
         "kode_merek_tg": distinct("kode_merek_tg"),
@@ -787,13 +812,18 @@ def smartwatch_filter_options():
 def download_smartwatch_template():
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "UKURAN", "JENIS TG", "ALTERNATIF",
-                "MEREK TG", "KODE MEREK TG"])
-    # UKURAN diisi ukuran layar smartwatch (mis. "44mm", "1.43 inch") — dipakai
-    # buat nyocokin ukuran TG, bukan match nama model kayak tipe_hp
-    w.writerow(["SW001", "Galaxy Watch 6", "Samsung", "44mm", "Clear", "SW001A", "No Brand", ""])
-    w.writerow(["SW002", "Apple Watch Series 9", "Apple", "45mm", "Privacy", "", "No Brand", ""])
-    w.writerow(["SW003", "Mi Band 8", "Xiaomi", "1.62 inch", "Anti Gores", "", "No Brand", ""])
+    w.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "BENTUK", "DIAMETER", "PANJANG", "LEBAR",
+                "RADIUS", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
+    # BENTUK = "Bulat" atau "Persegi" (sesuai cara mesin hydrogel motong):
+    #   - Bulat   -> isi DIAMETER saja (mis. "44mm"), PANJANG/LEBAR/RADIUS kosong
+    #   - Persegi -> isi PANJANG (P), LEBAR (L), RADIUS (R = kelengkungan sudut),
+    #                DIAMETER kosong
+    w.writerow(["SW001", "Galaxy Watch 6", "Samsung", "Bulat", "44mm", "", "", "",
+                "Clear", "SW001A", "No Brand", ""])
+    w.writerow(["SW002", "Apple Watch Series 9", "Apple", "Persegi", "", "45mm", "38mm", "6mm",
+                "Privacy", "", "No Brand", ""])
+    w.writerow(["SW003", "Mi Band 8", "Xiaomi", "Persegi", "", "47mm", "20.8mm", "5mm",
+                "Anti Gores", "", "No Brand", ""])
     buf.seek(0)
     return send_file(
         io.BytesIO(buf.getvalue().encode("utf-8-sig")),
@@ -810,17 +840,18 @@ def export_smartwatch_csv():
         return "Unauthorized: Password salah", 401
     db = get_smartwatch_db()
     rows = db.execute(
-        "SELECT kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, merek_tg, kode_merek_tg "
-        "FROM smartwatch ORDER BY kode"
+        "SELECT kode, tipe_smartwatch, merek, bentuk, diameter, panjang, lebar, radius, "
+        "jenis_tg, alternatif, merek_tg, kode_merek_tg FROM smartwatch ORDER BY kode"
     ).fetchall()
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "UKURAN", "JENIS TG", "ALTERNATIF",
-                "MEREK TG", "KODE MEREK TG"])
+    w.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "BENTUK", "DIAMETER", "PANJANG", "LEBAR",
+                "RADIUS", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
     for r in rows:
         alt_codes = _parse_alternatif(r["alternatif"])
-        w.writerow([r["kode"], r["tipe_smartwatch"], r["merek"], r["ukuran"], r["jenis_tg"],
-                    ";".join(alt_codes), r["merek_tg"], r["kode_merek_tg"]])
+        w.writerow([r["kode"], r["tipe_smartwatch"], r["merek"], r["bentuk"], r["diameter"],
+                    r["panjang"], r["lebar"], r["radius"], r["jenis_tg"], ";".join(alt_codes),
+                    r["merek_tg"], r["kode_merek_tg"]])
     buf.seek(0)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return send_file(
@@ -862,6 +893,9 @@ def import_smartwatch_csv():
 
         idx = {h: headers.index(h) for h in headers}
 
+        def col(row, name):
+            return row[idx[name]].strip() if name in idx and idx[name] < len(row) else ""
+
         rows_to_insert = []
         for row in reader:
             if not any(c.strip() for c in row):
@@ -870,21 +904,19 @@ def import_smartwatch_csv():
                 kode  = _normalize_kode(row[idx["KODE"]])
                 tipe  = row[idx["TIPE SMARTWATCH"]].strip()
                 merek = row[idx["MEREK"]].strip()
-                ukuran = (row[idx["UKURAN"]].strip()
-                          if "UKURAN" in idx and idx["UKURAN"] < len(row) else "")
-                jenis = (row[idx["JENIS TG"]].strip()
-                         if "JENIS TG" in idx and idx["JENIS TG"] < len(row) else "")
-                alt_raw = (row[idx["ALTERNATIF"]].strip()
-                           if "ALTERNATIF" in idx and idx["ALTERNATIF"] < len(row) else "")
-                alt = _parse_alternatif(alt_raw)
-                merek_tg = (row[idx["MEREK TG"]].strip()
-                            if "MEREK TG" in idx and idx["MEREK TG"] < len(row) else "")
-                kode_merek_tg = (row[idx["KODE MEREK TG"]].strip()
-                                 if "KODE MEREK TG" in idx and idx["KODE MEREK TG"] < len(row) else "")
+                bentuk = col(row, "BENTUK")
+                diameter = col(row, "DIAMETER")
+                panjang = col(row, "PANJANG")
+                lebar = col(row, "LEBAR")
+                radius = col(row, "RADIUS")
+                jenis = col(row, "JENIS TG")
+                alt = _parse_alternatif(col(row, "ALTERNATIF"))
+                merek_tg = col(row, "MEREK TG")
+                kode_merek_tg = col(row, "KODE MEREK TG")
                 if kode and tipe and merek:
                     rows_to_insert.append(
-                        (kode, tipe, merek, ukuran, jenis, json.dumps(alt, ensure_ascii=False),
-                         merek_tg, kode_merek_tg)
+                        (kode, tipe, merek, bentuk, diameter, panjang, lebar, radius, jenis,
+                         json.dumps(alt, ensure_ascii=False), merek_tg, kode_merek_tg)
                     )
             except IndexError:
                 continue
@@ -897,8 +929,8 @@ def import_smartwatch_csv():
         # backup data lama ke disk (pola sama kayak import HP)
         backup_created = False
         existing = db.execute(
-            "SELECT kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, merek_tg, kode_merek_tg "
-            "FROM smartwatch ORDER BY kode"
+            "SELECT kode, tipe_smartwatch, merek, bentuk, diameter, panjang, lebar, radius, "
+            "jenis_tg, alternatif, merek_tg, kode_merek_tg FROM smartwatch ORDER BY kode"
         ).fetchall()
         if existing:
             os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -906,17 +938,19 @@ def import_smartwatch_csv():
             backup_path = os.path.join(BACKUP_DIR, f"backup_smartwatch_{ts}.csv")
             with open(backup_path, "w", newline="", encoding="utf-8-sig") as bf:
                 bw = csv.writer(bf)
-                bw.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "UKURAN", "JENIS TG", "ALTERNATIF",
-                             "MEREK TG", "KODE MEREK TG"])
+                bw.writerow(["KODE", "TIPE SMARTWATCH", "MEREK", "BENTUK", "DIAMETER", "PANJANG",
+                             "LEBAR", "RADIUS", "JENIS TG", "ALTERNATIF", "MEREK TG", "KODE MEREK TG"])
                 for r in existing:
-                    bw.writerow([r["kode"], r["tipe_smartwatch"], r["merek"], r["ukuran"], r["jenis_tg"],
+                    bw.writerow([r["kode"], r["tipe_smartwatch"], r["merek"], r["bentuk"],
+                                 r["diameter"], r["panjang"], r["lebar"], r["radius"], r["jenis_tg"],
                                  r["alternatif"], r["merek_tg"], r["kode_merek_tg"]])
             backup_created = True
 
         db.execute("DELETE FROM smartwatch")
         db.executemany(
-            "INSERT INTO smartwatch (kode, tipe_smartwatch, merek, ukuran, jenis_tg, alternatif, "
-            "merek_tg, kode_merek_tg) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO smartwatch (kode, tipe_smartwatch, merek, bentuk, diameter, panjang, "
+            "lebar, radius, jenis_tg, alternatif, merek_tg, kode_merek_tg) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows_to_insert,
         )
         db.commit()

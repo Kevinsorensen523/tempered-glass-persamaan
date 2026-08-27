@@ -200,7 +200,8 @@
     th.col-kode { width: 120px; }
     th.col-tipe { width: 220px; }
     th.col-merek { width: 130px; }
-    th.col-ukuran { width: 110px; }
+    th.col-bentuk { width: 90px; }
+    th.col-ukuran { width: 130px; }
     th.col-jenis { width: 140px; }
     th.col-kode-merek-tg { width: 120px; }
     th.col-alt { min-width: 200px; }
@@ -311,14 +312,14 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
         </svg>
-        <input id="searchInput" type="text" placeholder="Cari KODE, TIPE SMARTWATCH, MEREK, UKURAN, JENIS TG…" autocomplete="off" />
+        <input id="searchInput" type="text" placeholder="Cari KODE, TIPE SMARTWATCH, MEREK, BENTUK, UKURAN, JENIS TG…" autocomplete="off" />
       </div>
       <div class="search-hint">Pencarian real-time di semua kolom</div>
     </div>
 
     <div class="filters-row">
       <select id="filterMerek" class="filter-select"><option value="">Semua Merek</option></select>
-      <select id="filterUkuran" class="filter-select"><option value="">Semua Ukuran</option></select>
+      <select id="filterBentuk" class="filter-select"><option value="">Semua Bentuk</option></select>
       <select id="filterJenisTg" class="filter-select"><option value="">Semua Jenis TG</option></select>
       <select id="filterMerekTg" class="filter-select"><option value="">Semua Merek TG</option></select>
       <button class="filter-clear" id="filterClearBtn" style="display:none" onclick="clearFilters()">Reset filter</button>
@@ -368,7 +369,8 @@
             <th class="col-kode">Kode</th>
             <th class="col-tipe">Tipe Smartwatch</th>
             <th class="col-merek">Merek</th>
-            <th class="col-ukuran">Ukuran</th>
+            <th class="col-bentuk">Bentuk</th>
+            <th class="col-ukuran">Ukuran (P/L/R atau ⌀)</th>
             <th class="col-jenis">Jenis TG</th>
             <th class="col-merek-tg">Merek TG</th>
             <th class="col-kode-merek-tg">Kode Merek TG</th>
@@ -376,7 +378,7 @@
           </tr>
         </thead>
         <tbody id="tableBody">
-          <tr class="empty-row"><td colspan="9"><span class="empty-icon">🔄</span>Memuat data…</td></tr>
+          <tr class="empty-row"><td colspan="10"><span class="empty-icon">🔄</span>Memuat data…</td></tr>
         </tbody>
       </table>
     </div>
@@ -420,16 +422,16 @@
   let searchTimer = null;
   let pendingFile  = null;
 
-  const FILTER_IDS = ["filterMerek", "filterUkuran", "filterJenisTg", "filterMerekTg"];
+  const FILTER_IDS = ["filterMerek", "filterBentuk", "filterJenisTg", "filterMerekTg"];
 
   async function loadData(q = "") {
     const params = new URLSearchParams({ q });
     const merek    = document.getElementById("filterMerek").value;
-    const ukuran   = document.getElementById("filterUkuran").value;
+    const bentuk   = document.getElementById("filterBentuk").value;
     const jenisTg  = document.getElementById("filterJenisTg").value;
     const merekTg  = document.getElementById("filterMerekTg").value;
     if (merek)   params.set("merek", merek);
-    if (ukuran)  params.set("ukuran", ukuran);
+    if (bentuk)  params.set("bentuk", bentuk);
     if (jenisTg) params.set("jenis_tg", jenisTg);
     if (merekTg) params.set("merek_tg", merekTg);
 
@@ -443,7 +445,7 @@
     const resp = await fetch("/api/smartwatch/filters");
     const json = await resp.json();
     fillSelect("filterMerek", json.merek);
-    fillSelect("filterUkuran", json.ukuran);
+    fillSelect("filterBentuk", json.bentuk);
     fillSelect("filterJenisTg", json.jenis_tg);
     fillSelect("filterMerekTg", json.merek_tg);
   }
@@ -486,7 +488,7 @@
     const stat  = document.getElementById("statText");
 
     if (data.length === 0) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="9">
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="10">
         <span class="empty-icon">${q ? "🔍" : "📂"}</span>
         ${q ? `Tidak ada data cocok dengan "<strong>${esc(q)}</strong>"` : "Belum ada data. Import CSV untuk memulai."}
       </td></tr>`;
@@ -502,7 +504,8 @@
         <td class="col-kode">${esc(r.kode)}</td>
         <td>${esc(r.tipe_smartwatch)}</td>
         <td>${esc(r.merek)}</td>
-        <td class="col-ukuran">${esc(r.ukuran) || '<span style="color:var(--border)">—</span>'}</td>
+        <td class="col-bentuk">${esc(r.bentuk) || '<span style="color:var(--border)">—</span>'}</td>
+        <td class="col-ukuran">${renderUkuran(r)}</td>
         <td class="col-jenis">${r.jenis_tg ? `<span class="jenis-badge">${esc(r.jenis_tg)}</span>` : '<span style="color:var(--border)">—</span>'}</td>
         <td class="col-merek-tg">${esc(r.merek_tg) || '<span style="color:var(--border)">—</span>'}</td>
         <td class="col-kode-merek-tg">${esc(r.kode_merek_tg) || '<span style="color:var(--border)">—</span>'}</td>
@@ -518,6 +521,16 @@
   function renderAlt(arr) {
     if (!arr || arr.length === 0) return '<span style="color:var(--border)">—</span>';
     return `<div class="alt-tags">${arr.map(a => `<span class="alt-tag">${esc(a)}</span>`).join("")}</div>`;
+  }
+
+  // Bulat -> tampilkan diameter (⌀). Persegi -> tampilkan P x L, R (radius sudut).
+  function renderUkuran(r) {
+    if (r.bentuk === "Bulat" && r.diameter) return `⌀${esc(r.diameter)}`;
+    if (r.bentuk === "Persegi" && (r.panjang || r.lebar)) {
+      const pl = `${esc(r.panjang) || "?"} × ${esc(r.lebar) || "?"}`;
+      return r.radius ? `${pl}, R${esc(r.radius)}` : pl;
+    }
+    return '<span style="color:var(--border)">—</span>';
   }
 
   document.getElementById("searchInput").addEventListener("input", function () {
