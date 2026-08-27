@@ -70,18 +70,27 @@ separate catalog for smartwatch tempered glass (`GET /smartwatch`, own DB file).
   **no password gate** on this endpoint (unlike CSV import/export) since it only adds one row
   and can't destroy existing data — matches the "beda kayak hp yang harus impor" requirement.
   CSV import/export (password-gated, full-replace) still exists for bulk operations.
-  **Populated 2026-08-27** with 24 rows from a Google Sheet Vera maintains (freeform Indonesian
-  notes, not a structured table — parsed by hand into `import_vera_smartwatch.csv`, gitignored
-  like other business data per `*.csv` in `.gitignore`, then imported via `POST
-  /api/smartwatch/import`). Entries with "cetak 2 ukuran" (two acceptable cut sizes for the
-  same watch model) became 2 rows, cross-linked via `alternatif` so staff can fall back to the
-  other cut if one's unavailable. One entry (`INFINIX X Watch H4`) had no numeric measurement in
-  the source — it says "pakai ukuran Apple Watch Ultra" (uses Apple Watch Ultra's size) with no
-  Apple Watch Ultra row to reference in that sheet — recorded as-is in `tipe_smartwatch`
-  (`"X Watch H4 (ukuran = Apple Watch Ultra)"`) with `bentuk`/measurement columns left empty
-  rather than guessing a number; still needs the real figure from Vera. `jenis_tg` defaulted to
-  `"Hydrogel"` for all 24 (matches the source machine), `merek_tg` to `"No Brand"` (in-house cut,
-  not a purchased branded product) — revisit both if that assumption turns out wrong.
+  **Populated 2026-08-27** with 17 rows (1 per model — see below) from a Google Sheet Vera
+  maintains (freeform Indonesian notes, not a structured table — parsed by hand into
+  `import_vera_smartwatch.csv`, gitignored like other business data per `*.csv` in
+  `.gitignore`, then imported via `POST /api/smartwatch/import`). One entry (`INFINIX X Watch
+  H4`) had no numeric measurement in the source — it says "pakai ukuran Apple Watch Ultra"
+  (uses Apple Watch Ultra's size) with no Apple Watch Ultra row to reference in that sheet —
+  recorded as-is in `tipe_smartwatch` (`"X Watch H4 (ukuran = Apple Watch Ultra)"`) with
+  `bentuk`/measurement columns left empty rather than guessing a number; still needs the real
+  figure from Vera. `jenis_tg` defaulted to `"Hydrogel"` for all 17 (matches the source
+  machine), `merek_tg` to `"No Brand"` (in-house cut, not a purchased branded product) —
+  revisit both if that assumption turns out wrong.
+  **Two-measurement entries, corrected 2026-08-27**: 7 of the source entries said "cetak 2
+  ukuran" (the machine cuts 2 acceptable sizes for that one model) — first attempt modeled
+  this as 2 separate rows cross-linked via `alternatif`, which read as confusing duplicate
+  rows once `Alternatif` was hidden from the table (user: "GTR 3 (Varian 2) ini kenapa masih
+  ada", "mksdnya alternatif" — the `alternatif` field was meant to be an in-row note, not a
+  reason to create a second visible row). **Fixed**: 1 row per model, both values written into
+  the same measurement field as free text (e.g. `diameter = "36.3mm atau 37mm"`, or per-side
+  for Persegi e.g. `lebar = "36mm atau 34mm"` when only one dimension differs between the two
+  cuts) — since these are TEXT columns this works without a schema change. Do not go back to
+  the 2-rows-plus-alternatif pattern for this kind of "two acceptable sizes" data.
 - **HP Baru finder** (`GET /hp-baru` page, `GET /api/hp-baru`): weekly cron
   (`scripts/find_new_phones.py`, runs Mondays 08:00 on the production server via
   crontab) pulls from **two** open sources and merges results, brand-scoped token
