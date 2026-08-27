@@ -370,7 +370,7 @@
             <th class="col-tipe">Tipe Smartwatch</th>
             <th class="col-merek">Merek</th>
             <th class="col-bentuk">Bentuk</th>
-            <th class="col-ukuran">Ukuran (P/L/R atau ⌀)</th>
+            <th class="col-ukuran">Ukuran</th>
             <th class="col-jenis">Jenis TG</th>
             <th class="col-merek-tg">Merek TG</th>
             <th class="col-kode-merek-tg">Kode Merek TG</th>
@@ -421,6 +421,10 @@
 <script>
   let searchTimer = null;
   let pendingFile  = null;
+  // kode -> tipe_smartwatch, dikumpulin tiap loadData supaya tag Alternatif bisa
+  // nampilin nama modelnya (bukan kode mentah kayak "SW0002" yang gak jelas
+  // maksudnya apa) — numpuk antar fetch biar tetap kekenal walau lagi difilter/dicari
+  const smartwatchIndex = {};
 
   const FILTER_IDS = ["filterMerek", "filterBentuk", "filterJenisTg", "filterMerekTg"];
 
@@ -498,6 +502,8 @@
       return;
     }
 
+    data.forEach(r => { smartwatchIndex[r.kode] = r.tipe_smartwatch; });
+
     tbody.innerHTML = data.map((r, i) => `
       <tr>
         <td class="col-no">${i + 1}</td>
@@ -520,15 +526,25 @@
 
   function renderAlt(arr) {
     if (!arr || arr.length === 0) return '<span style="color:var(--border)">—</span>';
-    return `<div class="alt-tags">${arr.map(a => `<span class="alt-tag">${esc(a)}</span>`).join("")}</div>`;
+    // Tampilin nama tipe (kalau kodenya udah pernah kemuat di tabel), bukan
+    // kode mentah kayak "SW0002" yang gak jelas maksudnya apa
+    return `<div class="alt-tags">${arr.map(a => {
+      const nama = smartwatchIndex[a];
+      const label = nama ? `${esc(nama)} (${esc(a)})` : esc(a);
+      return `<span class="alt-tag">${label}</span>`;
+    }).join("")}</div>`;
   }
 
-  // Bulat -> tampilkan diameter (⌀). Persegi -> tampilkan P x L, R (radius sudut).
+  // Ditulis teks biasa & jelas (bukan simbol/singkatan) biar gak bikin bingung
+  // staff yang gak familiar sama notasi teknik.
   function renderUkuran(r) {
-    if (r.bentuk === "Bulat" && r.diameter) return `⌀${esc(r.diameter)}`;
-    if (r.bentuk === "Persegi" && (r.panjang || r.lebar)) {
-      const pl = `${esc(r.panjang) || "?"} × ${esc(r.lebar) || "?"}`;
-      return r.radius ? `${pl}, R${esc(r.radius)}` : pl;
+    if (r.bentuk === "Bulat" && r.diameter) return `Diameter: ${esc(r.diameter)}`;
+    if (r.bentuk === "Persegi" && (r.panjang || r.lebar || r.radius)) {
+      const parts = [];
+      if (r.panjang) parts.push(`Panjang: ${esc(r.panjang)}`);
+      if (r.lebar)   parts.push(`Lebar: ${esc(r.lebar)}`);
+      if (r.radius)  parts.push(`Radius: ${esc(r.radius)}`);
+      return parts.join(", ");
     }
     return '<span style="color:var(--border)">—</span>';
   }
