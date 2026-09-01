@@ -30,9 +30,9 @@ import sqlite3
 import json
 import os
 import re
-import time
 import urllib.request
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -144,12 +144,7 @@ def fetch_wikidata_phones(since_date="2024-01-01"):
     return results
 
 
-def fetch_postel_phones(limit_per_brand=30):
-    """Query GraphQL publik sertifikasi.postel.go.id per merek, ambil sertifikat
-    aktif yg jenis alatnya HP. `brand` field di respons = nama pemasaran
-    (mis. "HOT 70 Pro 5G"), itu yg dipakai sbg label, bukan `model` (kode
-    internal mis. "X6896")."""
-    query = """
+_POSTEL_QUERY = """
     query ListTransLicenceFront($limit: Int, $offset: Int, $keyword: String, $filter: DataFilter, $advanced_filter: [DataFilter]) {
       licencefront {
         lists(limit: $limit, offset: $offset, keyword: $keyword, filter: $filter, advanced_filter: $advanced_filter) {
@@ -159,45 +154,69 @@ def fetch_postel_phones(limit_per_brand=30):
       }
     }
     """
+
+
+def _fetch_postel_brand(brand: str, limit_per_brand: int) -> list[dict]:
+    """Satu request GraphQL utk satu merek. Dipanggil paralel oleh
+    fetch_postel_phones() lewat ThreadPoolExecutor — request I/O-bound
+    (nunggu jaringan), jadi paralel jauh lebih cepat drpd loop serial."""
+    body = json.dumps({
+        "operationName": "ListTransLicenceFront",
+        "variables": {
+            "limit": limit_per_brand, "offset": 1, "keyword": brand,
+            "filter": {"column": "berlaku", "value": "1"}, "advanced_filter": [],
+        },
+        "query": _POSTEL_QUERY,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        POSTEL_ENDPOINT, data=body,
+        headers={
+            # server nolak (`{"errors":[{"message":"forbidden"}]}`) kalau
+            # Origin/Referer gak ada atau User-Agent gak kayak browser asli
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Origin": "https://sertifikasi.postel.go.id",
+            "Referer": "https://sertifikasi.postel.go.id/sertifikat/sertifikat-terbit",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
     results = []
-    for brand in POSTEL_BRANDS:
-        body = json.dumps({
-            "operationName": "ListTransLicenceFront",
-            "variables": {
-                "limit": limit_per_brand, "offset": 1, "keyword": brand,
-                "filter": {"column": "berlaku", "value": "1"}, "advanced_filter": [],
-            },
-            "query": query,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            POSTEL_ENDPOINT, data=body,
-            headers={
-                # server nolak (`{"errors":[{"message":"forbidden"}]}`) kalau
-                # Origin/Referer gak ada atau User-Agent gak kayak browser asli
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                "Content-Type": "application/json",
-                "Accept": "*/*",
-                "Origin": "https://sertifikasi.postel.go.id",
-                "Referer": "https://sertifikasi.postel.go.id/sertifikat/sertifikat-terbit",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        for row in data["data"]["licencefront"]["lists"]:
-            app = row["aplikasis"]
-            eqp_name = (app["eqp_name"] or "").upper()
-            if not any(kw in eqp_name for kw in POSTEL_PHONE_EQP_KEYWORDS):
-                continue
-            marketing_name = (app["brand"] or app["model"] or "").strip()
-            if not marketing_name:
-                continue
-            results.append({
-                "label": marketing_name,
-                "manufacturer": (app["merk"] or brand).strip(),
-                "release_date": row["lic_date"][:10],
-            })
-        time.sleep(0.3)  # sopan santun ke server pemerintah, bukan rate limit resmi mereka
+    for row in data["data"]["licencefront"]["lists"]:
+        app = row["aplikasis"]
+        eqp_name = (app["eqp_name"] or "").upper()
+        if not any(kw in eqp_name for kw in POSTEL_PHONE_EQP_KEYWORDS):
+            continue
+        marketing_name = (app["brand"] or app["model"] or "").strip()
+        if not marketing_name:
+            continue
+        results.append({
+            "label": marketing_name,
+            "manufacturer": (app["merk"] or brand).strip(),
+            "release_date": row["lic_date"][:10],
+        })
+    return results
+
+
+def fetch_postel_phones(limit_per_brand=30):
+    """Query GraphQL publik sertifikasi.postel.go.id per merek, ambil sertifikat
+    aktif yg jenis alatnya HP. `brand` field di respons = nama pemasaran
+    (mis. "HOT 70 Pro 5G"), itu yg dipakai sbg label, bukan `model` (kode
+    internal mis. "X6896").
+
+    Request per-merek dijalanin paralel (bukan serial + sleep(0.3) spt
+    sebelumnya) — ini yg bikin "Isi Tahun/Bulan Otomatis" di UI kerasa lambat,
+    krn 13 merek x network round-trip numpuk jadi belasan-puluhan detik kalau
+    serial. max_workers=5 dipilih biar tetep sopan ke server pemerintah (gak
+    nembak 13 request bersamaan), bukan cuma soal kecepatan mentah."""
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for brand_results in pool.map(
+            lambda b: _fetch_postel_brand(b, limit_per_brand), POSTEL_BRANDS
+        ):
+            results.extend(brand_results)
     return results
 
 

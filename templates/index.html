@@ -267,6 +267,9 @@
     th.col-kode-merek-tg { width: 120px; }
     th.col-launch { width: 110px; }
     th.col-alt { min-width: 200px; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { background: rgba(255,255,255,.12); }
+    .sort-ind { display: inline-block; width: 12px; font-size: .75rem; }
 
     .coming-soon-badge {
       display: inline-block;
@@ -521,13 +524,13 @@
         <thead>
           <tr>
             <th class="col-no">No.</th>
-            <th class="col-kode">Kode</th>
-            <th class="col-tipe">Tipe HP</th>
-            <th class="col-merek">Merek</th>
-            <th class="col-jenis">Jenis TG</th>
-            <th class="col-merek-tg">Merek TG</th>
-            <th class="col-kode-merek-tg">Kode Merek TG</th>
-            <th class="col-launch">Tahun</th>
+            <th class="col-kode sortable" onclick="toggleSort('kode')">Kode<span class="sort-ind" id="sortInd-kode"></span></th>
+            <th class="col-tipe sortable" onclick="toggleSort('tipe_hp')">Tipe HP<span class="sort-ind" id="sortInd-tipe_hp"></span></th>
+            <th class="col-merek sortable" onclick="toggleSort('merek')">Merek<span class="sort-ind" id="sortInd-merek"></span></th>
+            <th class="col-jenis sortable" onclick="toggleSort('jenis_tg')">Jenis TG<span class="sort-ind" id="sortInd-jenis_tg"></span></th>
+            <th class="col-merek-tg sortable" onclick="toggleSort('merek_tg')">Merek TG<span class="sort-ind" id="sortInd-merek_tg"></span></th>
+            <th class="col-kode-merek-tg sortable" onclick="toggleSort('kode_merek_tg')">Kode Merek TG<span class="sort-ind" id="sortInd-kode_merek_tg"></span></th>
+            <th class="col-launch sortable" onclick="toggleSort('tahun_launching')">Tahun<span class="sort-ind" id="sortInd-tahun_launching"></span></th>
             <th class="col-launch">Bulan</th>
             <th class="col-alt">Alternatif</th>
           </tr>
@@ -619,6 +622,11 @@
   let searchTimer = null;
   let pendingFile  = null;
   let recentOnly   = false;
+  let currentData  = [];
+  let currentTotal = 0;
+  let currentQ     = "";
+  let sortKey      = null;
+  let sortDir      = 1; // 1 = asc, -1 = desc
 
   // ── load & render ──────────────────────────────────────────────────────────
   async function loadData(q = "") {
@@ -635,8 +643,44 @@
 
     const resp = await fetch(`/api/hp?${params.toString()}`);
     const json = await resp.json();
-    renderTable(json.data, json.total, q);
+    currentData  = json.data;
+    currentTotal = json.total;
+    currentQ     = q;
+    renderSorted();
     updateFilterClearBtn();
+  }
+
+  // ── sort kolom (klik header) ──────────────────────────────────────────────
+  function toggleSort(key) {
+    if (sortKey === key) {
+      sortDir = -sortDir;
+    } else {
+      sortKey = key;
+      sortDir = 1;
+    }
+    document.querySelectorAll(".sort-ind").forEach(el => el.textContent = "");
+    const ind = document.getElementById(`sortInd-${key}`);
+    if (ind) ind.textContent = sortDir === 1 ? " ▲" : " ▼";
+    renderSorted();
+  }
+
+  function renderSorted() {
+    let data = currentData;
+    if (sortKey) {
+      data = [...currentData].sort((a, b) => {
+        const va = (a[sortKey] ?? "").toString();
+        const vb = (b[sortKey] ?? "").toString();
+        // "Coming Soon" (kosong) selalu di bawah, terlepas arah sortnya
+        if (sortKey === "tahun_launching") {
+          if (!va && vb) return 1;
+          if (va && !vb) return -1;
+          if (!va && !vb) return 0;
+          return sortDir * (Number(va) - Number(vb));
+        }
+        return sortDir * va.localeCompare(vb, "id", { numeric: true, sensitivity: "base" });
+      });
+    }
+    renderTable(data, currentTotal, currentQ);
   }
 
   function toggleRecentOnly() {
