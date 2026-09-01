@@ -719,12 +719,15 @@ def download_template():
         download_name="template_import_tg.csv",
     )
 
-EXPORT_PASSWORD = "bangkevin523"
+# Password khusus katalog HP — beda dari SMARTWATCH_EXPORT_PASSWORD/
+# SMARTWATCH_IMPORT_PASSWORD di bawah (diminta dipisah biar gak sama-sama
+# kepakai lintas halaman).
+HP_EXPORT_PASSWORD = "kevinhebatbang"
 
 @app.get("/api/hp/export")
 def export_csv():
     pwd = request.args.get("pwd")
-    if pwd != EXPORT_PASSWORD:
+    if pwd != HP_EXPORT_PASSWORD:
         return "Unauthorized: Password salah", 401
     db = get_db()
     rows = db.execute(
@@ -749,12 +752,12 @@ def export_csv():
     )
 
 
-IMPORT_PASSWORD = "bangkevin523"
+HP_IMPORT_PASSWORD = "kevinhebatbang"
 
 @app.post("/api/hp/import")
 def import_csv():
     pwd = request.form.get("pwd")
-    if pwd != IMPORT_PASSWORD:
+    if pwd != HP_IMPORT_PASSWORD:
         return jsonify({"error": "Password salah! Akses ditolak."}), 401
 
     file = request.files.get("file")
@@ -851,6 +854,11 @@ def import_csv():
 
 
 # ── smartwatch (database terpisah, ukuran tempered glass smartwatch) ───────────
+# Password sendiri, beda dari HP_EXPORT_PASSWORD/HP_IMPORT_PASSWORD di atas
+# (diminta dipisah biar halaman smartwatch gak ikut kena ganti password HP).
+SMARTWATCH_EXPORT_PASSWORD = "bangkevin523"
+SMARTWATCH_IMPORT_PASSWORD = "bangkevin523"
+
 
 @app.get("/smartwatch")
 def smartwatch_page():
@@ -913,9 +921,9 @@ def edit_smartwatch(row_id: int):
     manual (POST /api/smartwatch, gak digembok password karena cuma nambah
     baris baru & gak bisa ngerusak data lama), edit ini bisa nimpa data yang
     udah ada jadi digembok password yang sama kayak export/import CSV
-    (IMPORT_PASSWORD, "bangkevin523")."""
+    smartwatch (SMARTWATCH_IMPORT_PASSWORD)."""
     data = request.get_json(silent=True) or {}
-    if data.get("pwd") != IMPORT_PASSWORD:
+    if data.get("pwd") != SMARTWATCH_IMPORT_PASSWORD:
         return jsonify({"error": "Password salah! Akses ditolak."}), 401
 
     tipe = (data.get("tipe_smartwatch") or "").strip()
@@ -1040,7 +1048,7 @@ def download_smartwatch_template():
 @app.get("/api/smartwatch/export")
 def export_smartwatch_csv():
     pwd = request.args.get("pwd")
-    if pwd != EXPORT_PASSWORD:
+    if pwd != SMARTWATCH_EXPORT_PASSWORD:
         return "Unauthorized: Password salah", 401
     db = get_smartwatch_db()
     rows = db.execute(
@@ -1069,7 +1077,7 @@ def export_smartwatch_csv():
 @app.post("/api/smartwatch/import")
 def import_smartwatch_csv():
     pwd = request.form.get("pwd")
-    if pwd != IMPORT_PASSWORD:
+    if pwd != SMARTWATCH_IMPORT_PASSWORD:
         return jsonify({"error": "Password salah! Akses ditolak."}), 401
 
     file = request.files.get("file")
