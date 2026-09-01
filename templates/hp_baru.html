@@ -97,6 +97,59 @@
     .mark-done-btn:disabled { opacity: .5; cursor: default; }
 
     footer { text-align: center; padding: 18px; font-size: .72rem; color: var(--muted); }
+
+    /* ── modal Tambah ke Database ────────────────────────────────────────── */
+    .overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(10,20,45,.55);
+      backdrop-filter: blur(3px);
+      z-index: 200;
+      align-items: center; justify-content: center;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--white); border-radius: 14px; padding: 28px 30px;
+      width: 460px; max-width: 95vw;
+      box-shadow: 0 24px 64px rgba(0,0,0,.25);
+      animation: pop .2s ease;
+    }
+    @keyframes pop { from { transform: scale(.93) translateY(-12px); opacity: 0; } }
+    .modal h2 { font-size: 1.1rem; margin-bottom: 6px; color: var(--navy); }
+    .modal p { font-size: .84rem; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
+    .form-label {
+      font-size: .72rem; font-weight: 700; color: var(--navy);
+      display: block; margin-bottom: 5px; letter-spacing: .04em;
+    }
+    .form-input {
+      width: 100%; padding: 9px 10px; border: 1.5px solid var(--border);
+      border-radius: 8px; outline: none; font-size: .88rem;
+      font-family: inherit; background: #FAFCFF;
+    }
+    .form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    .form-row { margin: 12px 0; }
+    .form-row.two { display: flex; gap: 12px; }
+    .form-row.two > div { flex: 1; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    .btn-ghost {
+      background: none; border: 1.5px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 9px 16px; font-size: .84rem; font-weight: 700; cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--blue); border: none; color: #fff;
+      border-radius: 8px; padding: 9px 16px; font-size: .84rem; font-weight: 700; cursor: pointer;
+    }
+    .btn-primary:hover { opacity: .9; }
+    .form-error {
+      display: none; background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA;
+      border-radius: 8px; padding: 8px 12px; font-size: .8rem; margin-top: 10px;
+    }
+    .form-error.show { display: block; }
+    .field-hint {
+      display: none; font-size: .78rem; color: var(--blue); margin-top: 6px;
+      line-height: 1.5;
+    }
+    .field-hint.show { display: block; }
+    .form-input[readonly] { background: var(--light); color: var(--blue); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -143,6 +196,49 @@
   </div>
 </main>
 
+<!-- ── MODAL: Tambah ke Database sebelum ditandai selesai ─────────────────── -->
+<div class="overlay" id="addOverlay">
+  <div class="modal">
+    <h2>Tambah ke Database HP</h2>
+    <p>Lengkapi data di bawah untuk memasukkan model ini ke katalog utama sebelum ditandai selesai.</p>
+
+    <div class="form-row">
+      <label class="form-label">NAMA TIPE *</label>
+      <input type="text" id="addTipe" class="form-input" placeholder="mis. Galaxy S25 Ultra">
+    </div>
+    <div class="form-row two">
+      <div>
+        <label class="form-label">MEREK *</label>
+        <input type="text" id="addMerek" class="form-input" list="merekList" placeholder="mis. Samsung">
+        <datalist id="merekList"></datalist>
+      </div>
+      <div>
+        <label class="form-label">MEREK TG *</label>
+        <input type="text" id="addMerekTg" class="form-input" placeholder="mis. No Brand">
+      </div>
+    </div>
+    <div class="form-row two">
+      <div>
+        <label class="form-label">JENIS TG *</label>
+        <input type="text" id="addJenisTg" class="form-input" placeholder="mis. Clear">
+      </div>
+      <div>
+        <label class="form-label">KODE *</label>
+        <input type="text" id="addKode" class="form-input" list="kodeList" placeholder="mis. TG0678">
+        <datalist id="kodeList"></datalist>
+      </div>
+    </div>
+    <div class="field-hint" id="addKodeHint"></div>
+
+    <div class="form-error" id="addError"></div>
+
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeAddModal()">Batal</button>
+      <button class="btn-primary" onclick="submitAddAndMark()">Simpan &amp; Tandai Selesai</button>
+    </div>
+  </div>
+</div>
+
 <footer>Database Tempered Glass &nbsp;·&nbsp; Sumber: Wikidata (CC0) &amp; Sertifikasi Postel/SDPPI</footer>
 
 <script>
@@ -151,6 +247,12 @@
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
   }
+
+  const BULAN_ID = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+
+  // key -> objek kandidat lengkap, dipakai buat prefill modal Tambah ke Database
+  let candidatesByKey = {};
 
   async function loadReport() {
     const resp = await fetch("/api/hp-baru");
@@ -163,6 +265,9 @@
       : "belum pernah dijalankan";
 
     const data = json.new_candidates || [];
+    candidatesByKey = {};
+    data.forEach(p => { candidatesByKey[p.key] = p; });
+
     if (data.length === 0) {
       tbody.innerHTML = `<tr class="empty-row"><td colspan="5">
         <span class="empty-icon">✅</span>
@@ -182,37 +287,207 @@
     `).join("");
   }
 
-  async function markDone(key, row) {
-    const btn = row.querySelector(".mark-done-btn");
+  async function markDoneOnly(key, row) {
+    const resp = await fetch("/api/hp-baru/mark", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    if (!resp.ok) throw new Error("gagal simpan");
+    row.remove();
+    const tbody = document.getElementById("tableBody");
+    if (!tbody.querySelector("tr:not(.empty-row)")) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="5">
+        <span class="empty-icon">✅</span>
+        Tidak ada kandidat HP baru saat ini.
+      </td></tr>`;
+    }
+  }
+
+  // ── modal "Tambah ke Database" ──────────────────────────────────────────
+  // Klik "Tandai Selesai" gak langsung nandain — dibuka dulu modal ini biar
+  // staff sekalian masukin modelnya ke katalog utama (hp_data.db), soalnya
+  // laporan HP Baru cuma nemuin kandidat, gak otomatis nambah ke DB.
+  let pendingKey = null;
+  let pendingRow = null;
+
+  async function loadMerekOptions() {
+    try {
+      const resp = await fetch("/api/hp/filters");
+      const json = await resp.json();
+      document.getElementById("merekList").innerHTML =
+        (json.merek || []).map(m => `<option value="${esc(m)}">`).join("");
+    } catch {
+      // dropdown merek cuma bantuan pengisian, gak fatal kalau gagal dimuat
+    }
+  }
+
+  // 1 kode = 1 jenis kaca fisik yang sama (gak mungkin beda-beda per model
+  // HP yang makai kode itu) — kalau kode yang diketik udah pernah dipakai,
+  // Jenis TG (& Merek TG) diisi otomatis & dikunci biar gak ke-input beda
+  // dari yang seharusnya. Sebaliknya, kalau Jenis TG diisi duluan, field
+  // Kode direkomendasiin (datalist) dari kode-kode yang udah tercatat pakai
+  // jenis itu.
+  let kodeLocked = false;
+  let kodeLookupTimer = null;
+  let jenisRecommendTimer = null;
+
+  function lockFieldsToExisting(info) {
+    kodeLocked = true;
+    const jenisInput = document.getElementById("addJenisTg");
+    const merekTgInput = document.getElementById("addMerekTg");
+    jenisInput.value = info.jenis_tg || "";
+    jenisInput.readOnly = true;
+    merekTgInput.value = info.merek_tg || merekTgInput.value;
+    merekTgInput.readOnly = true;
+
+    const contoh = (info.examples || []).slice(0, 2).join(", ");
+    const hint = document.getElementById("addKodeHint");
+    hint.textContent = `Kode ini sudah dipakai${contoh ? ` (mis. ${contoh})` : ""} — `
+      + `Jenis TG & Merek TG mengikuti data yang sudah ada, tidak bisa diubah.`;
+    hint.classList.add("show");
+  }
+
+  function unlockFields() {
+    kodeLocked = false;
+    document.getElementById("addJenisTg").readOnly = false;
+    document.getElementById("addMerekTg").readOnly = false;
+    document.getElementById("addKodeHint").classList.remove("show");
+  }
+
+  function onKodeInput() {
+    clearTimeout(kodeLookupTimer);
+    const kode = document.getElementById("addKode").value.trim();
+    if (!kode) { unlockFields(); return; }
+    kodeLookupTimer = setTimeout(async () => {
+      try {
+        const resp = await fetch(`/api/hp/kode-info?kode=${encodeURIComponent(kode)}`);
+        const info = await resp.json();
+        if (info.exists) lockFieldsToExisting(info);
+        else unlockFields();
+      } catch {
+        // lookup gagal (mis. jaringan) -> biarin field tetap editable, gak fatal
+      }
+    }, 300);
+  }
+
+  function onJenisTgInput() {
+    clearTimeout(jenisRecommendTimer);
+    if (kodeLocked) return; // kode udah dikunci ke data yang ada, gak perlu rekomendasi lagi
+    const jenis = document.getElementById("addJenisTg").value.trim();
+    if (!jenis) { document.getElementById("kodeList").innerHTML = ""; return; }
+    jenisRecommendTimer = setTimeout(async () => {
+      try {
+        const resp = await fetch(`/api/hp/kodes-by-jenis?jenis_tg=${encodeURIComponent(jenis)}`);
+        const json = await resp.json();
+        document.getElementById("kodeList").innerHTML =
+          (json.kode || []).map(k => `<option value="${esc(k)}">`).join("");
+      } catch {
+        // rekomendasi gagal -> datalist tetap kosong, kode masih bisa diketik manual
+      }
+    }, 300);
+  }
+
+  document.getElementById("addKode").addEventListener("input", onKodeInput);
+  document.getElementById("addJenisTg").addEventListener("input", onJenisTgInput);
+
+  function openAddModal(key, row) {
+    pendingKey = key;
+    pendingRow = row;
+    const p = candidatesByKey[key] || {};
+    document.getElementById("addTipe").value = p.label || "";
+    document.getElementById("addMerek").value = p.manufacturer || "";
+    document.getElementById("addMerekTg").value = "No Brand";
+    document.getElementById("addJenisTg").value = "";
+    document.getElementById("addKode").value = "";
+    document.getElementById("kodeList").innerHTML = "";
+    document.getElementById("addError").classList.remove("show");
+    unlockFields();
+    document.getElementById("addOverlay").classList.add("open");
+    setTimeout(() => document.getElementById("addTipe").focus(), 100);
+  }
+
+  function closeAddModal() {
+    document.getElementById("addOverlay").classList.remove("open");
+    pendingKey = null;
+    pendingRow = null;
+  }
+
+  function showAddError(msg) {
+    const el = document.getElementById("addError");
+    el.textContent = msg;
+    el.classList.add("show");
+  }
+
+  async function submitAddAndMark() {
+    const tipe = document.getElementById("addTipe").value.trim();
+    const merek = document.getElementById("addMerek").value.trim();
+    const merekTg = document.getElementById("addMerekTg").value.trim();
+    const jenisTg = document.getElementById("addJenisTg").value.trim();
+    const kode = document.getElementById("addKode").value.trim();
+
+    if (!tipe || !merek || !merekTg || !jenisTg || !kode) {
+      showAddError("Nama Tipe, Merek, Merek TG, Jenis TG, dan Kode wajib diisi.");
+      return;
+    }
+    // format kode di seluruh hp_data.db konsisten "TG" + 4 digit — cek di sini
+    // dulu (feedback instan) sebelum ke server, yg tetep nolak juga kalau ini
+    // ke-skip (mis. lewat DevTools)
+    if (!/^TG\d{4}$/.test(kode)) {
+      showAddError(`Format kode "${kode}" salah — harus "TG" diikuti tepat 4 digit angka (mis. TG0009).`);
+      return;
+    }
+
+    // tahun/bulan launching udah diketahui dari release_date kandidat — diisi
+    // otomatis biar gak "Coming Soon" padahal datanya udah ada
+    const p = candidatesByKey[pendingKey] || {};
+    let tahunLaunching = "", bulanLaunching = "";
+    const m = /^(\d{4})-(\d{2})/.exec(p.release_date || "");
+    if (m) {
+      tahunLaunching = m[1];
+      bulanLaunching = BULAN_ID[parseInt(m[2], 10)] || "";
+    }
+
+    const btn = document.querySelector("#addOverlay .btn-primary");
     btn.disabled = true;
     btn.textContent = "Menyimpan…";
+
     try {
-      const resp = await fetch("/api/hp-baru/mark", {
+      const addResp = await fetch("/api/hp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({
+          kode, tipe_hp: tipe, merek, merek_tg: merekTg, jenis_tg: jenisTg,
+          tahun_launching: tahunLaunching, bulan_launching: bulanLaunching,
+        }),
       });
-      if (!resp.ok) throw new Error("gagal simpan");
-      row.remove();
-      const tbody = document.getElementById("tableBody");
-      if (!tbody.querySelector("tr:not(.empty-row)")) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="5">
-          <span class="empty-icon">✅</span>
-          Tidak ada kandidat HP baru saat ini.
-        </td></tr>`;
+      const addJson = await addResp.json().catch(() => ({}));
+      if (!addResp.ok) {
+        showAddError(addJson.error || "Gagal menyimpan ke database.");
+        return;
       }
+
+      await markDoneOnly(pendingKey, pendingRow);
+      closeAddModal();
     } catch {
+      showAddError("Terjadi kesalahan jaringan, coba lagi.");
+    } finally {
       btn.disabled = false;
-      btn.textContent = "Tandai Selesai";
-      alert("Gagal menandai selesai, coba lagi.");
+      btn.textContent = "Simpan & Tandai Selesai";
     }
   }
 
   document.getElementById("tableBody").addEventListener("click", (e) => {
     const btn = e.target.closest(".mark-done-btn");
     if (!btn) return;
-    markDone(btn.dataset.key, btn.closest("tr"));
+    openAddModal(btn.dataset.key, btn.closest("tr"));
   });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeAddModal();
+  });
+
+  loadMerekOptions();
 
   async function refreshNow() {
     const btn = document.getElementById("refreshBtn");

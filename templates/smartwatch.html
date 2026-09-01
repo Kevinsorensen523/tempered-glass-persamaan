@@ -208,6 +208,14 @@
     th.col-jenis { width: 140px; }
     th.col-kode-merek-tg { width: 120px; }
     th.col-alt { min-width: 200px; }
+    th.col-aksi { width: 70px; text-align: center; }
+    td.col-aksi { text-align: center; }
+    .edit-btn {
+      background: none; border: 1.5px solid var(--border); border-radius: 6px;
+      padding: 5px 9px; cursor: pointer; font-size: .82rem; line-height: 1;
+      color: var(--blue); transition: background .15s, border-color .15s;
+    }
+    .edit-btn:hover { background: var(--light); border-color: var(--accent); }
 
     tbody tr { border-bottom: 1px solid #EEF2F8; transition: background .12s; }
     tbody tr:last-child { border-bottom: none; }
@@ -397,10 +405,11 @@
             <th class="col-jenis">Jenis TG</th>
             <th class="col-merek-tg">Merek TG</th>
             <th class="col-kode-merek-tg">Kode Merek TG</th>
+            <th class="col-aksi">Aksi</th>
           </tr>
         </thead>
         <tbody id="tableBody">
-          <tr class="empty-row"><td colspan="8"><span class="empty-icon">🔄</span>Memuat data…</td></tr>
+          <tr class="empty-row"><td colspan="9"><span class="empty-icon">🔄</span>Memuat data…</td></tr>
         </tbody>
       </table>
     </div>
@@ -507,6 +516,79 @@
   </div>
 </div>
 
+<!-- ── MODAL EDIT DATA (butuh password, bisa nimpa data yang udah ada) ────── -->
+<div class="overlay" id="editOverlay">
+  <div class="modal" style="width:480px;">
+    <div class="modal-icon info">✏️</div>
+    <h2>Edit Data Smartwatch</h2>
+    <p>Perubahan langsung menimpa data yang sudah ada — perlu password otorisasi.</p>
+
+    <div style="margin: 14px 0;">
+      <label class="form-label">TIPE SMARTWATCH *</label>
+      <input type="text" id="editTipe" class="form-input">
+    </div>
+    <div style="display:flex; gap:12px; margin: 14px 0;">
+      <div style="flex:1;">
+        <label class="form-label">MEREK *</label>
+        <input type="text" id="editMerek" class="form-input">
+      </div>
+      <div style="flex:1;">
+        <label class="form-label">BENTUK</label>
+        <select id="editBentuk" class="form-input" onchange="onEditBentukChange()">
+          <option value="">— pilih —</option>
+          <option value="Bulat">Bulat</option>
+          <option value="Persegi">Persegi</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="editBulatFields" style="display:none; margin: 14px 0;">
+      <label class="form-label">DIAMETER</label>
+      <input type="text" id="editDiameter" class="form-input">
+    </div>
+    <div id="editPersegiFields" style="display:none; margin: 14px 0; gap:10px;">
+      <div style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label class="form-label">PANJANG</label>
+          <input type="text" id="editPanjang" class="form-input">
+        </div>
+        <div style="flex:1;">
+          <label class="form-label">LEBAR</label>
+          <input type="text" id="editLebar" class="form-input">
+        </div>
+        <div style="flex:1;">
+          <label class="form-label">RADIUS</label>
+          <input type="text" id="editRadius" class="form-input">
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:12px; margin: 14px 0;">
+      <div style="flex:1;">
+        <label class="form-label">JENIS TG</label>
+        <input type="text" id="editJenisTg" class="form-input">
+      </div>
+      <div style="flex:1;">
+        <label class="form-label">MEREK TG</label>
+        <input type="text" id="editMerekTg" class="form-input">
+      </div>
+    </div>
+    <div style="margin: 14px 0;">
+      <label class="form-label">KODE MEREK TG (opsional)</label>
+      <input type="text" id="editKodeMerekTg" class="form-input">
+    </div>
+    <div style="margin: 14px 0;">
+      <label class="form-label">PASSWORD OTORISASI *</label>
+      <input type="password" id="editPassword" class="form-input" placeholder="Masukkan password admin...">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeEditModal()">Batal</button>
+      <button class="btn btn-primary" onclick="doEditSmartwatch()">Simpan Perubahan</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -574,12 +656,17 @@
     });
   });
 
+  // data terakhir yang dimuat, dipakai buat lookup pas modal Edit dibuka
+  // (biar gak perlu fetch ulang 1 baris pas klik tombol edit)
+  let lastData = [];
+
   function renderTable(data, total, q) {
     const tbody = document.getElementById("tableBody");
     const stat  = document.getElementById("statText");
+    lastData = data;
 
     if (data.length === 0) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="8">
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="9">
         <span class="empty-icon">${q ? "🔍" : "📂"}</span>
         ${q ? `Tidak ada data cocok dengan "<strong>${esc(q)}</strong>"` : "Belum ada data. Import CSV untuk memulai."}
       </td></tr>`;
@@ -599,6 +686,7 @@
         <td class="col-jenis">${r.jenis_tg ? `<span class="jenis-badge">${esc(r.jenis_tg)}</span>` : '<span style="color:var(--border)">—</span>'}</td>
         <td class="col-merek-tg">${esc(r.merek_tg) || '<span style="color:var(--border)">—</span>'}</td>
         <td class="col-kode-merek-tg">${esc(r.kode_merek_tg) || '<span style="color:var(--border)">—</span>'}</td>
+        <td class="col-aksi"><button class="edit-btn" onclick="openEditModal(${r.id})" title="Edit data">✏️</button></td>
       </tr>
     `).join("");
 
@@ -746,8 +834,88 @@
     }
   }
 
+  // ── edit data (butuh password, beda dari tambah data yang gak digembok) ──
+  let editingId = null;
+
+  function openEditModal(id) {
+    const r = lastData.find(row => row.id === id);
+    if (!r) { toast("❌ Data tidak ditemukan, coba muat ulang.", "error"); return; }
+    editingId = id;
+    document.getElementById("editTipe").value = r.tipe_smartwatch;
+    document.getElementById("editMerek").value = r.merek;
+    document.getElementById("editBentuk").value = r.bentuk;
+    document.getElementById("editDiameter").value = r.diameter;
+    document.getElementById("editPanjang").value = r.panjang;
+    document.getElementById("editLebar").value = r.lebar;
+    document.getElementById("editRadius").value = r.radius;
+    document.getElementById("editJenisTg").value = r.jenis_tg;
+    document.getElementById("editMerekTg").value = r.merek_tg;
+    document.getElementById("editKodeMerekTg").value = r.kode_merek_tg;
+    document.getElementById("editPassword").value = "";
+    onEditBentukChange();
+    document.getElementById("editOverlay").classList.add("open");
+    setTimeout(() => document.getElementById("editTipe").focus(), 100);
+  }
+
+  function closeEditModal() {
+    document.getElementById("editOverlay").classList.remove("open");
+    editingId = null;
+  }
+
+  function onEditBentukChange() {
+    const bentuk = document.getElementById("editBentuk").value;
+    document.getElementById("editBulatFields").style.display = bentuk === "Bulat" ? "block" : "none";
+    document.getElementById("editPersegiFields").style.display = bentuk === "Persegi" ? "block" : "none";
+  }
+
+  async function doEditSmartwatch() {
+    const tipe = document.getElementById("editTipe").value.trim();
+    const merek = document.getElementById("editMerek").value.trim();
+    const password = document.getElementById("editPassword").value;
+    if (!tipe || !merek) {
+      toast("❌ Tipe Smartwatch dan Merek wajib diisi!", "error");
+      return;
+    }
+    if (!password) {
+      toast("❌ Password wajib diisi!", "error");
+      document.getElementById("editPassword").focus();
+      return;
+    }
+    const payload = {
+      pwd: password,
+      tipe_smartwatch: tipe,
+      merek: merek,
+      bentuk: document.getElementById("editBentuk").value,
+      diameter: document.getElementById("editDiameter").value.trim(),
+      panjang: document.getElementById("editPanjang").value.trim(),
+      lebar: document.getElementById("editLebar").value.trim(),
+      radius: document.getElementById("editRadius").value.trim(),
+      jenis_tg: document.getElementById("editJenisTg").value.trim(),
+      merek_tg: document.getElementById("editMerekTg").value.trim(),
+      kode_merek_tg: document.getElementById("editKodeMerekTg").value.trim(),
+    };
+    try {
+      const resp = await fetch(`/api/smartwatch/${editingId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await resp.json();
+      if (resp.ok) {
+        closeEditModal();
+        await loadFilterOptions();
+        await loadData(document.getElementById("searchInput").value.trim());
+        toast("✅ Perubahan tersimpan.", "success");
+      } else {
+        toast(`❌ ${json.error || "Gagal menyimpan perubahan."}`, "error");
+      }
+    } catch (e) {
+      toast("❌ Terjadi kesalahan jaringan.", "error");
+    }
+  }
+
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") { cancelImport(); closeAddModal(); }
+    if (e.key === "Escape") { cancelImport(); closeAddModal(); closeEditModal(); }
   });
 
   let toastTimer;

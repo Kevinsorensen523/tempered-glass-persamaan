@@ -175,6 +175,10 @@ def _smartwatch_row_to_dict(r):
 
 _CODE_TOKEN = re.compile(r"[A-Za-z0-9\-]+")
 
+# format kode "hp" yang dipakai di seluruh hp_data.db (bukan format universal
+# sistem — smartwatch pakai "SW####" sendiri, lihat _SMARTWATCH_KODE_RE)
+_HP_KODE_RE = re.compile(r"^TG\d{4}$")
+
 
 def _normalize_kode(kode: str) -> str:
     """Standar kode di sistem ini: tanpa tanda strip (mis. TG-0018 -> TG0018)."""
@@ -343,6 +347,106 @@ def list_hp():
     return jsonify({"data": [_row_to_dict(r) for r in rows], "total": total})
 
 
+@app.post("/api/hp")
+def add_hp():
+    """Tambah 1 baris data HP secara manual — dipakai dari alur /hp-baru saat
+    staff klik "Tandai Selesai" pada kandidat HP baru, biar bisa langsung
+    masuk katalog utama tanpa perlu nyiapin file CSV dulu. Beda dari alur
+    smartwatch (kode di-generate otomatis, lihat `_next_smartwatch_kode`),
+    `kode` di sini wajib diisi manual oleh staff karena penomoran TG terikat
+    ke kelompok stok per KA-code, bukan sekadar angka urut berikutnya —
+    lihat "kode-uniqueness gotcha" di CLAUDE.md soal kenapa auto-increment
+    naif pernah nyebabin collision."""
+    data = request.get_json(silent=True) or {}
+    kode = _normalize_kode((data.get("kode") or "").strip())
+    tipe = (data.get("tipe_hp") or "").strip()
+    merek = (data.get("merek") or "").strip()
+    jenis_tg = (data.get("jenis_tg") or "").strip()
+    merek_tg = (data.get("merek_tg") or "").strip()
+    kode_merek_tg = (data.get("kode_merek_tg") or "").strip()
+    tahun_launching = (data.get("tahun_launching") or "").strip()
+    bulan_launching = (data.get("bulan_launching") or "").strip()
+
+    if not kode or not tipe or not merek or not merek_tg or not jenis_tg:
+        return jsonify({
+            "error": "Kode, Tipe HP, Merek, Merek TG, dan Jenis TG wajib diisi"
+        }), 400
+
+    # format kode di seluruh hp_data.db konsisten "TG" + 4 digit (3192 dari 3193
+    # baris nyata cocok pola ini waktu dicek) — tolak yg gak cocok di sini biar
+    # gak kejadian lagi kayak "TG09999" (5 digit, typo) ke-input tanpa ketauan
+    if not _HP_KODE_RE.match(kode):
+        return jsonify({
+            "error": f'Format kode "{kode}" salah — harus "TG" diikuti tepat 4 digit angka (mis. TG0009).'
+        }), 400
+
+    db = get_db()
+    # 1 kode = 1 jenis kaca fisik yang sama, jadi kode BOLEH dipakai ulang oleh
+    # model HP lain (mis. sama-sama pas di dudukan kode itu) asal jenis_tg-nya
+    # konsisten sama row yang udah ada — bukan blok total kayak sebelumnya,
+    # cukup dicegah kalau jenis_tg-nya beda (lihat juga /api/hp/kode-info yang
+    # dipakai frontend buat auto-isi & kunci field Jenis TG sebelum submit).
+    existing = db.execute(
+        "SELECT jenis_tg FROM hp WHERE kode = ? LIMIT 1", (kode,)
+    ).fetchone()
+    if existing and existing["jenis_tg"].strip().lower() != jenis_tg.lower():
+        return jsonify({
+            "error": (f'Kode {kode} sudah dipakai dengan Jenis TG "{existing["jenis_tg"]}" — '
+                      f'gak bisa diisi "{jenis_tg}" yang beda (1 kode = 1 jenis kaca fisik).')
+        }), 400
+
+    db.execute(
+        "INSERT INTO hp (kode, tipe_hp, merek, jenis_tg, alternatif, merek_tg, "
+        "kode_merek_tg, tahun_launching, bulan_launching) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?)",
+        (kode, tipe, merek, jenis_tg, merek_tg, kode_merek_tg, tahun_launching, bulan_launching),
+    )
+    db.commit()
+    return jsonify({"added": True, "kode": kode})
+
+
+@app.get("/api/hp/kode-info")
+def hp_kode_info():
+    """Cek apakah `kode` udah dipakai row lain — kalau iya, balikin jenis_tg
+    (+ contoh tipe_hp) yang udah ada. Dipakai frontend modal Tambah ke
+    Database (/hp-baru) buat auto-isi & kunci field Jenis TG begitu staff
+    ngetik kode yang udah pernah dipakai, biar gak ke-input beda dari yang
+    seharusnya (1 kode = 1 jenis kaca fisik yang sama)."""
+    kode = _normalize_kode(request.args.get("kode", "").strip())
+    if not kode:
+        return jsonify({"exists": False})
+    db = get_db()
+    rows = db.execute(
+        "SELECT tipe_hp, jenis_tg, merek_tg, kode_merek_tg FROM hp WHERE kode = ? ORDER BY id",
+        (kode,),
+    ).fetchall()
+    if not rows:
+        return jsonify({"exists": False})
+    return jsonify({
+        "exists": True,
+        "jenis_tg": rows[0]["jenis_tg"],
+        "merek_tg": rows[0]["merek_tg"],
+        "kode_merek_tg": rows[0]["kode_merek_tg"],
+        "examples": [r["tipe_hp"] for r in rows[:5]],
+    })
+
+
+@app.get("/api/hp/kodes-by-jenis")
+def hp_kodes_by_jenis():
+    """Daftar kode yang sudah tercatat pakai `jenis_tg` tertentu — rekomendasi
+    buat field Kode di modal Tambah ke Database kalau staff isi Jenis TG
+    duluan sebelum kode-nya (biar kepilih dari kode yang emang udah cocok,
+    bukan ngetik sembarang)."""
+    jenis_tg = request.args.get("jenis_tg", "").strip()
+    if not jenis_tg:
+        return jsonify({"kode": []})
+    db = get_db()
+    rows = db.execute(
+        "SELECT DISTINCT kode FROM hp WHERE jenis_tg = ? COLLATE NOCASE ORDER BY kode",
+        (jenis_tg,),
+    ).fetchall()
+    return jsonify({"kode": [r["kode"] for r in rows]})
+
+
 @app.get("/api/hp/filters")
 def hp_filter_options():
     """Nilai unik untuk isi dropdown filter (merek, jenis TG, merek TG, tahun launching)."""
@@ -386,10 +490,17 @@ def _run_launch_backfill():
     os.makedirs(REPORTS_DIR, exist_ok=True)
     try:
         with open(os.path.join(REPORTS_DIR, "cron.log"), "a") as log:
-            subprocess.run(
-                [sys.executable, LAUNCH_BACKFILL_SCRIPT],
-                cwd=BASE_DIR, stdout=log, stderr=subprocess.STDOUT, timeout=120,
-            )
+            try:
+                subprocess.run(
+                    [sys.executable, LAUNCH_BACKFILL_SCRIPT],
+                    cwd=BASE_DIR, stdout=log, stderr=subprocess.STDOUT, timeout=180,
+                )
+            except subprocess.TimeoutExpired:
+                # sebelumnya exception ini nembus ke thread & ilang diam-diam
+                # (background thread gak nampilin traceback ke user) — dicatat
+                # eksplisit ke cron.log biar kelihatan kenapa "Isi Tahun/Bulan
+                # Otomatis" kadang selesai tapi gak ngisi apa-apa.
+                log.write("\n[backfill-launch] TIMEOUT setelah 180s, proses dihentikan paksa.\n")
     finally:
         try:
             os.remove(LAUNCH_BACKFILL_LOCK)
@@ -794,6 +905,49 @@ def add_smartwatch():
     )
     db.commit()
     return jsonify({"added": True, "kode": kode})
+
+
+@app.put("/api/smartwatch/<int:row_id>")
+def edit_smartwatch(row_id: int):
+    """Edit 1 baris data smartwatch yang udah ada — beda dari tambah data
+    manual (POST /api/smartwatch, gak digembok password karena cuma nambah
+    baris baru & gak bisa ngerusak data lama), edit ini bisa nimpa data yang
+    udah ada jadi digembok password yang sama kayak export/import CSV
+    (IMPORT_PASSWORD, "bangkevin523")."""
+    data = request.get_json(silent=True) or {}
+    if data.get("pwd") != IMPORT_PASSWORD:
+        return jsonify({"error": "Password salah! Akses ditolak."}), 401
+
+    tipe = (data.get("tipe_smartwatch") or "").strip()
+    merek = (data.get("merek") or "").strip()
+    bentuk = (data.get("bentuk") or "").strip()
+    diameter = (data.get("diameter") or "").strip()
+    panjang = (data.get("panjang") or "").strip()
+    lebar = (data.get("lebar") or "").strip()
+    radius = (data.get("radius") or "").strip()
+    jenis_tg = (data.get("jenis_tg") or "").strip()
+    merek_tg = (data.get("merek_tg") or "").strip()
+    kode_merek_tg = (data.get("kode_merek_tg") or "").strip()
+
+    if not tipe or not merek:
+        return jsonify({"error": "Tipe Smartwatch dan Merek wajib diisi"}), 400
+    if bentuk not in (SMARTWATCH_BENTUK_BULAT, SMARTWATCH_BENTUK_PERSEGI, ""):
+        return jsonify({"error": "Bentuk harus 'Bulat' atau 'Persegi'"}), 400
+
+    db = get_smartwatch_db()
+    existing = db.execute("SELECT id FROM smartwatch WHERE id = ?", (row_id,)).fetchone()
+    if not existing:
+        return jsonify({"error": "Data tidak ditemukan"}), 404
+
+    db.execute(
+        "UPDATE smartwatch SET tipe_smartwatch = ?, merek = ?, bentuk = ?, diameter = ?, "
+        "panjang = ?, lebar = ?, radius = ?, jenis_tg = ?, merek_tg = ?, kode_merek_tg = ? "
+        "WHERE id = ?",
+        (tipe, merek, bentuk, diameter, panjang, lebar, radius, jenis_tg, merek_tg,
+         kode_merek_tg, row_id),
+    )
+    db.commit()
+    return jsonify({"updated": True})
 
 
 @app.get("/api/smartwatch")
